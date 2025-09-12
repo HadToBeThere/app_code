@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Had to Be There — MVP+ Subs + PotW</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <link rel="stylesheet" href="app.css" />
+</head>
+<body>
+
+  <!-- Splash (Press Start) -->
+  <div id="splash" aria-modal="true" role="dialog">
+    <div class="splash-wrap">
+      <div class="apptitle">Had to Be There</div>
+      <div class="bigq">What’s Happening Now?</div>
+      <div class="logo-stack">
+        <!-- Pin logo (purely decorative) -->
+        <svg class="logo-pin" width="120" height="120" viewBox="0 0 100 100" aria-hidden="true">
+          <defs>
+            <linearGradient id="pinGrad" x1="0%" x2="0%" y1="0%" y2="100%">
+              <stop offset="0%" stop-color="#fca5a5"/>
+              <stop offset="100%" stop-color="#b91c1c"/>
+            </linearGradient>
+          </defs>
+          <path d="M50 10c17 0 30 13 30 30 0 22-30 50-30 50S20 62 20 40c0-17 13-30 30-30z" fill="url(#pinGrad)"/>
+          <circle cx="50" cy="40" r="9" fill="#fff"/>
+        </svg>
+        <!-- Globe Start Button -->
+        <button id="startGlobe" class="logo-globe" aria-label="Press Start">
+          <svg viewBox="0 0 200 200" width="160" height="160" aria-hidden="true">
+            <defs>
+              <radialGradient id="globeGrad" cx="50%" cy="45%" r="60%">
+                <stop offset="0%"  stop-color="#9be8ff"/>
+                <stop offset="100%" stop-color="#1d4ed8"/>
+              </radialGradient>
+            </defs>
+            <circle cx="100" cy="100" r="78" fill="url(#globeGrad)" stroke="rgba(0,0,0,.25)" stroke-width="6"/>
+            <!-- tiny land blobs -->
+            <path d="M70 95c-10-8-8-22 6-28 16-8 30-3 34 10" fill="#10b981" opacity=".95"/>
+            <path d="M120 120c8 6 19 5 24-2 7-9 5-21-7-26" fill="#10b981" opacity=".95"/>
+          </svg>
+          <div class="start-label">PRESS START</div>
+        </button>
+      </div>
+      <div class="tagline">Ephemeral, hyper-local pings that vanish in 24h</div>
+      <div class="splash-actions">
+        <span class="linkish" id="openCreateAccount">Create account</span>
+        <span class="linkish" id="openSignIn">Sign in</span>
+        <span class="linkish" id="continueGuest">Continue as Guest</span>
+      </div>
+    </div>
+  </div>
+
+  <div id="app">
+    <div id="map"><div class="desat-hole"></div></div>
+
+    <!-- Friends sidebar -->
+    <aside class="leftbar" id="leftbar" aria-label="Friends">
+      <header>
+        <span>Friends</span>
+        <button class="btn" id="refreshFriendsBtn">Refresh</button>
+      </header>
+      <div class="section">
+        <div><strong>Your Friend Code</strong></div>
+        <div class="row" style="gap:.5rem">
+          <input id="myCode" type="text" value="" readonly style="flex:1" />
+          <button class="btn" id="copyCode">Copy</button>
+        </div>
+      </div>
+      <div class="section">
+        <div><strong>Find Friend</strong></div>
+        <div class="row" style="gap:.5rem; margin-top:6px">
+          <input id="friendSearch" type="text" placeholder="Search by name or code" style="flex:1"/>
+          <button class="btn" id="friendSearchBtn">Search</button>
+        </div>
+      </div>
+      <div class="section">
+        <div><strong>Add Friend</strong></div>
+        <div class="row" style="gap:.5rem; margin-top:6px">
+          <input id="addFriendInput" type="text" placeholder="Paste exact UID" style="flex:1"/>
+          <button class="btn" id="addFriendBtn">Add</button>
+        </div>
+        <div class="muted" style="margin-top:6px">Search shows the first match. Use UID to add exactly.</div>
+      </div>
+      <div class="section">
+        <div><strong>Filter</strong></div>
+        <div class="seg" id="filterSeg" style="margin-top:6px">
+          <button data-mode="all" class="active">All</button>
+          <button data-mode="friends">Friends+Me</button>
+          <button data-mode="me">Me</button>
+        </div>
+      </div>
+      <div class="friend-list" id="friendList">
+        <div class="muted">No friends yet. Share your code above.</div>
+      </div>
+    </aside>
+
+    <button class="friends-toggle" id="friendsToggle" title="Show/Hide Friends">Hide Friends ◀</button>
+
+    <!-- Top center tray -->
+    <div class="tray">
+      <span class="pill" id="quotaText">0/3 pings today</span>
+      <button class="pill" id="subscribeBtn" title="Subscribe (shows M badge)">M</button>
+    </div>
+
+    <!-- Right: notifications & auth -->
+    <button class="bell" id="bellBtn">🔔 <span class="badge" id="notifBadge" style="display:none">0</span></button>
+
+    <div class="auth-bar" id="authBar">
+      <button class="auth-btn" id="openSignInTop">Sign in</button>
+      <button class="auth-btn" id="openCreateTop">Create account</button>
+      <button class="auth-btn" id="guestTop">Guest</button>
+    </div>
+    <div class="user-chip" id="userChip" title="Click to sign out">Signed out</div>
+    <!-- Plain Sign out button (only when authed) -->
+    <button class="auth-btn" id="signOutBtn" style="display:none" aria-label="Sign out">Sign out</button>
+
+    <!-- Add Ping FAB -->
+    <button class="fab" id="addBtn">+ Drop Ping</button>
+
+    <!-- Legend -->
+    <div class="legend">
+      <strong>Had to Be There</strong><br/>
+      Drop a ping inside the circle. No names, no harassment. Posts vanish after 24h.<br/>
+      Yours = green; friends = orange; others = blue; subscribers show as white “M” if not your friend.
+    </div>
+
+    <!-- Ping of the Week card -->
+    <div id="potwCard" class="potw-card" role="region" aria-live="polite">
+      <div class="potw-title">PING OF THE WEEK</div>
+      <div class="potw-row">
+        <img id="potwImg" alt="Ping of the Week image" style="display:none; width:60px; height:60px; object-fit:cover; border-radius:12px;"/>
+        <div class="potw-body">
+          <div class="potw-text" id="potwText"></div>
+          <div class="potw-meta muted" id="potwMeta"></div>
+          <div id="potwEmpty" class="muted">No ping of the week yet.</div>
+        </div>
+        <div class="potw-actions">
+          <button class="btn" id="potwJump" disabled>View</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Notifications Modal -->
+    <div class="modal" id="notifsModal" aria-modal="true" role="dialog">
+      <div class="card">
+        <header>
+          <span>Notifications</span>
+          <button class="btn" id="closeNotifs">Close</button>
+        </header>
+        <div class="content" id="notifsContent">
+          <div class="muted">No notifications</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Create Ping Modal -->
+    <div class="modal" id="createModal" aria-modal="true" role="dialog">
+      <div class="card">
+        <header>
+          <span>Create Ping</span>
+          <div style="display:flex; gap:8px">
+            <button class="btn" id="cancelCreate">Cancel</button>
+          </div>
+        </header>
+        <div class="content">
+          <div class="row"><input id="pingText" type="text" maxlength="140" placeholder="What’s happening?" /></div>
+          <div class="row" style="gap:.5rem; align-items:center">
+            <label class="btn" for="pingImage">Attach Image</label>
+            <input id="pingImage" type="file" accept="image/*" style="display:none" />
+          </div>
+          <input id="lat" type="hidden" />
+          <input id="lon" type="hidden" />
+        </div>
+        <div class="actions">
+          <button class="btn primary" id="submitPing">Post</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Subscribe Modal -->
+    <div class="modal" id="subscribeModal" aria-modal="true" role="dialog">
+      <div class="card">
+        <header>
+          <span>Subscribe</span>
+          <button class="btn" id="closeSub">Close</button>
+        </header>
+        <div class="content">
+          <p>Subscribers get a subtle white “M” badge when seen by non-friends. No extra privileges beyond the badge.</p>
+        </div>
+        <div class="actions">
+          <button class="btn primary" id="confirmSub">Subscribe</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Ping Sheet (details) -->
+    <div class="sheet" id="pingSheet" role="dialog" aria-modal="true">
+      <header>
+        <div style="font-weight:900">Ping</div>
+        <div style="display:flex; gap:8px">
+          <select id="reportReason" class="btn">
+            <option value="">Report…</option>
+            <option value="harassment">Harassment</option>
+            <option value="doxxing">Personal info</option>
+            <option value="spam">Spam</option>
+            <option value="other">Other</option>
+          </select>
+          <button class="btn" id="closeSheet">Close</button>
+        </div>
+      </header>
+      <div class="text" id="sheetText">…</div>
+      <div class="image" id="sheetImage" style="display:none"><img id="sheetImgEl" src="" alt="Ping image"/></div>
+      <div class="meta" id="sheetMeta">—</div>
+      <div class="reactbar" id="reactBar"></div>
+      <div class="comments" id="comments"></div>
+      <div class="comment-input" style="display:flex; gap:8px; padding:10px 14px; border-top:1px solid #eee;">
+        <input id="commentInput" type="text" maxlength="200" placeholder="Add a comment" />
+        <button class="btn" id="sendComment">Send</button>
+      </div>
+    </div>
+
+    <!-- Sign-in Modal -->
+    <div class="modal" id="signInModal" aria-modal="true" role="dialog">
+      <div class="card">
+        <header>
+          <span>Sign in</span>
+          <button class="btn" id="closeSignIn">Close</button>
+        </header>
+        <div class="content">
+          <div class="row"><input id="siEmail" type="email" placeholder="Email" /></div>
+          <div class="row"><input id="siPass" type="password" placeholder="Password" /></div>
+          <div class="row" style="justify-content:space-between">
+            <button class="btn" id="doSignIn">Sign in</button>
+            <button class="btn" id="doGoogle">Sign in with Google</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Create account Modal (kept for parity) -->
+    <div class="modal" id="createAcctModal" aria-modal="true" role="dialog">
+      <div class="card">
+        <header>
+          <span>Create account</span>
+          <button class="btn" id="closeCreate">Close</button>
+        </header>
+        <div class="content">
+          <div class="row"><input id="caEmail" type="email" placeholder="Email" /></div>
+          <div class="row"><input id="caPass" type="password" placeholder="Password (min 6 chars)" /></div>
+          <div class="row"><input id="caName" type="text" placeholder="Display name" /></div>
+        </div>
+        <div class="actions">
+          <button class="btn primary" id="doCreateAcct">Create</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Toasts -->
+    <div id="toast" role="status" aria-live="polite" aria-atomic="true"></div>
+  </div>
+
+  <!-- Leaflet -->
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+  <!-- Firebase (Compat) -->
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore-compat.js"></script>
+
+  <!-- App -->
+  <script src="app.js"></script>
+
+  <!-- Show Sign Out button only when authed; delegate to chip click -->
+  <script>
+  (function(){
+    var signOutBtn = document.getElementById('signOutBtn');
+    if (signOutBtn) {
+      signOutBtn.addEventListener('click', function(){
+        var chip = document.getElementById('userChip');
+        if (chip) chip.click();
+      });
+      try {
+        var auth2 = firebase.auth();
+        auth2.onAuthStateChanged(function(u){
+          signOutBtn.style.display = u ? 'inline-flex' : 'none';
+        });
+      } catch(e) { console.warn('SignOut init failed', e); }
+    }
+  })();
+  </script>
+</body>
+</html>
+
+
+
+
+
+
+
+
+

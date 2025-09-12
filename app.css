@@ -1,0 +1,166 @@
+:root{
+  --brand:#d21f3c;  /* McGill-ish red */
+  --ink:#0b1220;
+  --muted:#6b7280;
+  --blue:#0ea5e9;
+  --green:#16a34a;
+  --orange:#f59e0b; /* friends */
+  --red:#ef4444;
+  --card:#ffffff;
+  --gold:#d4af37;
+}
+
+html,body,#app{height:100%;margin:0;font-family:ui-rounded,system-ui,-apple-system,Segoe UI,Inter,Roboto,Arial,sans-serif;color:var(--ink)}
+
+/* ---------- Splash ---------- */
+#splash{
+  position:fixed; inset:0; z-index:9999;
+  display:flex; align-items:center; justify-content:center;
+  background:
+    radial-gradient(1200px 1200px at 110% -10%, rgba(210,31,60,0.08) 0%, rgba(210,31,60,0) 45%),
+    radial-gradient(1400px 1400px at -10% 110%, rgba(210,31,60,0.08) 0%, rgba(210,31,60,0) 45%),
+    #fff;
+  transition:opacity .45s ease;
+}
+.splash-wrap{display:flex;flex-direction:column;align-items:center;gap:18px;padding:24px 18px;text-align:center}
+.apptitle{font-size:50px;font-weight:1000;color:#b5112e;letter-spacing:.005em}
+.bigq{font-size:44px;line-height:1.05;font-weight:1000;color:#c01631;margin-top:-6px}
+.tagline{font-size:14px;color:var(--muted);margin-top:-6px}
+.logo-stack{display:flex;flex-direction:column;align-items:center;gap:22px}
+.logo-pin{filter:drop-shadow(0 8px 18px rgba(0,0,0,.18))}
+.logo-globe{background:transparent;border:none;padding:0;cursor:pointer;border-radius:999px;filter:drop-shadow(0 10px 22px rgba(0,0,0,.18));position:relative}
+.start-label{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);color:#0b1220;background:rgba(255,255,255,.92);padding:6px 12px;border-radius:999px;font-weight:900;font-size:12px;box-shadow:0 6px 16px rgba(0,0,0,.15)}
+.logo-globe:hover{transform:translateY(-1px) scale(1.02)}
+.splash-actions{display:flex;gap:10px;margin-top:6px;flex-wrap:wrap;justify-content:center}
+.linkish{font-weight:800;color:#c01631;cursor:pointer}
+
+/* ---------- Map & mask ---------- */
+#map{height:100%;width:100%;position:relative;z-index:0;touch-action:pan-x pan-y pinch-zoom}
+.leaflet-pane.inner-pane.gray-all{filter:grayscale(100%) brightness(0.6) saturate(0.30)!important}
+.desat-hole{
+  display:none; /* enabled after auth/guest */
+  position:absolute;inset:0;pointer-events:none;z-index:500;
+  --cx:50%;--cy:50%;--r:220px;
+  /* Outside-gray mask (inside is transparent -> stays colorful) */
+  mask: radial-gradient(circle at var(--cx) var(--cy), transparent var(--r), black calc(var(--r) + 1px));
+  -webkit-mask: radial-gradient(circle at var(--cx) var(--cy), transparent var(--r), black calc(var(--r) + 1px));
+  background: rgba(0,0,0,0.001);
+  backdrop-filter: grayscale(100%) brightness(0.6) saturate(0.3);
+  -webkit-backdrop-filter: grayscale(100%) brightness(0.6) saturate(0.3);
+}
+.leaflet-pane.inner-pane{filter:saturate(2.2) contrast(1.25) brightness(1.1)}
+
+/* ---------- Top chrome ---------- */
+.tray{position:fixed;left:50%;transform:translateX(-50%);top:12px;display:flex;gap:8px;align-items:center;background:rgba(255,255,255,.92);backdrop-filter:blur(6px);padding:8px 10px;border-radius:999px;box-shadow:0 8px 22px rgba(0,0,0,.12);z-index:2000}
+.pill{border:1px solid #e6e6e6;border-radius:999px;padding:6px 10px;font-size:14px;background:#fff;font-weight:800}
+.seg{display:flex;border:1px solid #e6e6e6;border-radius:999px;overflow:hidden}
+.seg button{padding:6px 10px;border:0;background:#fff;font-weight:800;cursor:pointer}
+.seg button.active{background:#111;color:#fff}
+
+.bell{position:fixed;top:12px;right:12px;z-index:2000;background:#fff;border:1px solid #e6e6e6;border-radius:999px;padding:6px 10px;font-weight:900;cursor:pointer;box-shadow:0 6px 18px rgba(0,0,0,.1)}
+.badge{display:inline-block;min-width:18px;padding:0 6px;height:18px;line-height:18px;border-radius:10px;background:#c01631;color:#fff;font-size:12px;margin-left:6px}
+.auth-bar{position:fixed;top:12px;right:110px;background:rgba(255,255,255,.92);padding:6px 10px;border-radius:999px;box-shadow:0 6px 18px rgba(0,0,0,.1);z-index:2000;display:flex;gap:8px}
+.auth-btn{border:1px solid #e6e6e6;background:#fff;padding:6px 10px;border-radius:10px;cursor:pointer;font-weight:800}
+.user-chip{position:fixed;top:12px;right:110px;background:#111;color:#fff;padding:6px 10px;border-radius:999px;box-shadow:0 6px 18px rgba(0,0,0,.15);font-weight:800;display:none;z-index:2000;cursor:pointer}
+
+.toast{position:fixed;top:70px;right:16px;background:#111;color:#fff;padding:10px 12px;border-radius:12px;display:none;z-index:2100;max-width:90vw;word-break:break-word}
+.toast.show{display:block}
+
+/* ---------- Left Friends Sidebar + Toggle ---------- */
+.leftbar{
+  position:fixed; left:12px; top:60px; bottom:12px; width:min(320px, 92vw);
+  background:#fff; border:1px solid #eee; border-radius:16px; box-shadow:0 16px 40px rgba(0,0,0,.12);
+  z-index:2000; display:flex; flex-direction:column; overflow:hidden;
+}
+.leftbar.hidden{display:none}
+.leftbar header{padding:10px 12px; font-weight:900; border-bottom:1px solid #eee; display:flex; align-items:center; justify-content:space-between}
+.leftbar .section{padding:10px 12px; border-bottom:1px solid #f3f3f3}
+.friend-list{flex:1; overflow:auto; padding:8px 12px}
+.friend-item{display:flex; justify-content:space-between; align-items:center; padding:8px 0; border-bottom:1px dashed #eee}
+.muted{color:#6b7280; font-size:12px}
+.row{display:flex; gap:8px; align-items:center}
+.row input[type=text]{flex:1; padding:8px 10px; border-radius:10px; border:1px solid #ddd}
+
+/* Toggle button lives below Leaflet zoom (+/â€“) and never blocks it */
+.friends-toggle{
+  position:fixed; left:12px; top:112px; z-index:2100;
+  background:#fff; border:1px solid #e6e6e6; padding:6px 10px;
+  border-radius:999px; box-shadow:0 6px 18px rgba(0,0,0,.1); font-weight:900; cursor:pointer;
+}
+
+/* ---------- Bottom & modals ---------- */
+.fab{position:fixed;right:16px;bottom:16px;border:none;border-radius:999px;padding:14px 18px;font-weight:900;cursor:pointer;color:#fff;background:linear-gradient(135deg,#16a34a,#22c55e);box-shadow:0 12px 28px rgba(34,197,94,.35);z-index:2000}
+.legend{position:fixed;left:12px;bottom:12px;background:#fff;padding:12px 14px;border-radius:16px;font-size:12px;box-shadow:0 8px 22px rgba(0,0,0,.12);z-index:2000;max-width:min(44ch,92vw)}
+.modal{position:fixed;inset:0;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,.35);z-index:2100}
+.modal.open{display:flex}
+.card{width:min(560px,92vw);background:#fff;border-radius:16px;box-shadow:0 24px 60px rgba(0,0,0,.2);overflow:hidden;border:1px solid #eee}
+.card header{padding:14px 16px;font-weight:900;border-bottom:1px solid #eee;display:flex;justify-content:space-between;align-items:center}
+.card .content{padding:14px 16px}
+textarea,input[type=text],input[type=password],input[type=email],input[type=file]{width:100%;padding:10px;border-radius:12px;border:1px solid #ddd;font-size:14px}
+.actions{display:flex;gap:10px;justify-content:flex-end;padding:12px 16px;border-top:1px solid #eee}
+.btn{border:1px solid #ddd;background:#fff;padding:8px 12px;border-radius:10px;cursor:pointer;font-weight:800}
+.btn.primary{background:#111;color:#fff;border-color:#111}
+
+.sheet{position:fixed;left:50%;transform:translateX(-50%);bottom:12px;width:min(720px,96vw);background:#fff;border:1px solid #eee;border-radius:16px;box-shadow:0 20px 60px rgba(0,0,0,.15);display:none;overflow:hidden;z-index:2050}
+.sheet.open{display:block}
+.sheet header{padding:12px 14px;border-bottom:1px solid #eee;display:flex;justify-content:space-between;align-items:center;gap:8px}
+.sheet .text{padding:12px 14px;font-size:16px}
+.meta{color:var(--muted);font-size:12px;padding:0 14px 10px}
+.reactbar{display:flex;gap:8px;padding:8px 14px;border-top:1px solid #f2f2f2;border-bottom:1px solid #f2f2f2;flex-wrap:wrap}
+.react{padding:6px 10px;border:1px solid #eee;border-radius:999px;background:#fafafa;cursor:pointer;font-weight:800}
+.sheet .image{padding:8px 14px}
+.sheet .image img{max-width:100%;border-radius:12px;border:1px solid #eee}
+
+/* ---------- Ping-of-the-Week bottom card ---------- */
+.potw-card{
+  position:fixed; left:50%; transform:translateX(-50%); bottom:84px;
+  background:#fff; border:1px solid #eee; border-radius:16px;
+  box-shadow:0 16px 40px rgba(0,0,0,.12); z-index:2000; padding:10px 12px; max-width:min(720px,96vw);
+}
+.potw-title{font-weight:1000; color:var(--gold); margin-bottom:6px; letter-spacing:.02em}
+.potw-row{display:flex; gap:12px; align-items:flex-start}
+.potw-row img{width:84px; height:84px; object-fit:cover; border-radius:12px; border:1px solid #eee}
+.potw-meta{font-size:12px; color:#666}
+.potw-right{margin-left:auto; display:flex; align-items:center}
+.potw-jump{margin-left:12px}
+
+/* ---------- PotW banner + ring over marker ---------- */
+.potw-wrap { position: relative; display:inline-block; }
+.potw-banner{
+  position:absolute; left:50%; transform:translate(-50%,-110%);
+  background:linear-gradient(135deg, #f6e27a, #d4af37); color:#111;
+  border:1px solid rgba(0,0,0,.2);
+  padding:2px 6px; border-radius:6px; font-size:11px; font-weight:1000; white-space:nowrap;
+  filter:drop-shadow(0 2px 4px rgba(0,0,0,.28));
+}
+.potw-ring{
+  position:absolute; left:50%; bottom:10px; transform:translateX(-50%) scale(1.18);
+  width:100%; height:auto; aspect-ratio:1/1; border-radius:999px;
+  border:3px solid var(--gold);
+  box-shadow:0 0 12px rgba(212,175,55,.55), inset 0 0 4px rgba(212,175,55,.45);
+  pointer-events:none;
+  animation:potwShimmer 2.6s linear infinite;
+}
+@keyframes potwShimmer{
+  0%{ box-shadow:0 0 8px rgba(212,175,55,.4), inset 0 0 3px rgba(212,175,55,.35);}
+  50%{ box-shadow:0 0 16px rgba(212,175,55,.7), inset 0 0 6px rgba(212,175,55,.6);}
+  100%{ box-shadow:0 0 8px rgba(212,175,55,.4), inset 0 0 3px rgba(212,175,55,.35);}
+}
+
+/* Pulse used when Jump is pressed and marker is already visible */
+@keyframes pulseOnce {
+  0% { transform: scale(1); }
+  40% { transform: scale(1.14); }
+  100% { transform: scale(1); }
+}
+.potw-pulse { animation: pulseOnce 600ms ease-out 1; transform-origin:center bottom; }
+
+
+/* ---- Friend Requests ---- */
+.req-card{display:flex; justify-content:space-between; align-items:center; padding:8px 0; border-bottom:1px dashed #eee}
+.req-actions{display:flex; gap:6px}
+.req-actions .btn{padding:4px 8px; border-radius:8px}
+
+/* ---- Notifications additions ---- */
+.notif-row{display:flex; justify-content:space-between; align-items:center; gap:8px}
+.notif-actions .btn{padding:4px 8px; border-radius:8px}
