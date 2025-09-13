@@ -361,6 +361,67 @@ startRequestsListeners(currentUser.uid);
 
   /* --------- Map --------- */
   const map = L.map('map',{ center:DEFAULT_CENTER, zoom:15, minZoom:0, maxZoom:22, zoomAnimation:true, markerZoomAnimation:true, fadeAnimation:true, zoomSnap:.5, wheelPxPerZoomLevel:45, wheelDebounceTime:40, scrollWheelZoom:true, doubleClickZoom:false, dragging:true, touchZoom:'center', zoomControl:false });
+  // Hotspot overlay pane (below markers, above inner overlay)
+  const HOTSPOT_RADIUS_M = 100;
+  const HOTSPOT_MIN_CENTER_SEP_M = 150;
+  try{ map.createPane('hotspotPane'); map.getPane('hotspotPane').style.zIndex = 500; }catch(_){ }
+  let hotspotLayers=[], hotspotData=[], hotspotTimer=null;
+
+  function saveHotspot(dataArr){ try{ localStorage.setItem('hadToBeThere_hotspot', JSON.stringify({ list:dataArr, savedAt:Date.now() })); }catch(_){ } }
+  function loadHotspot(){ try{ const s=localStorage.getItem('hadToBeThere_hotspot'); if(!s) return []; const parsed=JSON.parse(s); const arr=Array.isArray(parsed)? parsed : (Array.isArray(parsed.list)? parsed.list: []); return arr.filter(d=>d && typeof d.lat==='number' && typeof d.lon==='number'); }catch(_){ return []; } }
+
+  function clearHotspot(){ if(hotspotLayers&&hotspotLayers.length){ hotspotLayers.forEach(l=>{ try{ map.removeLayer(l); }catch(_){ } }); } hotspotLayers=[]; }
+  function updateHotspotVisibility(){ if(filterMode!=='all'){ clearHotspot(); return; } if(hotspotData && hotspotData.length){ drawHotspots(hotspotData); } else { clearHotspot(); } }
+
+  function drawHotspots(list){ if(!list || !list.length) return; if(filterMode!=='all') return; clearHotspot();
+    list.forEach((data,idx)=>{
+      const circle = L.circle([data.lat, data.lon], { radius: HOTSPOT_RADIUS_M, color:'#1d4ed8', weight:2, opacity:.9, fillColor:'#1d4ed8', fillOpacity:.18, pane:'hotspotPane' }).addTo(map);
+      hotspotLayers.push(circle);
+      const labelHtml = `<div class=\"hotspot-label\">Hotspot ${idx+1} (${data.count})</div>`;
+      const icon = L.divIcon({ className:'', html:labelHtml, iconSize:null });
+      const label = L.marker([data.lat, data.lon], { icon, pane:'hotspotPane', interactive:false }).addTo(map);
+      hotspotLayers.push(label);
+    });
+  }
+
+  function hotspotEligible(p){
+    const ts = p.createdAt?.toDate ? p.createdAt.toDate().getTime() : 0; if (!ts || Date.now()-ts > LIVE_WINDOW_MS) return false; // 24h
+    if(p.status==='hidden') return false; if(!inFence(p)) return false; return true;
+  }
+
+  function scheduleHotspotRecompute(){ if(hotspotTimer) clearTimeout(hotspotTimer); hotspotTimer=setTimeout(recomputeHotspot, 250); }
+  function recomputeHotspot(){
+    hotspotTimer=null;
+    // Collect eligible pings (always consider All, independent of current filter selection)
+    const arr=[]; lastPingCache.forEach((p)=>{ if(hotspotEligible(p)) arr.push(p); });
+    if(arr.length===0){ hotspotData=[]; updateHotspotVisibility(); return; }
+    // Helper to evaluate a center candidate over provided set
+    function evaluateCenter(centerPing, pool){
+      const cLL=L.latLng(centerPing.lat,centerPing.lon); const members=[];
+      for(let j=0;j<pool.length;j++){ const q=pool[j]; const d=cLL.distanceTo([q.lat,q.lon]); if(d<=HOTSPOT_RADIUS_M) members.push(q); }
+      const count=members.length; if(count===0) return null;
+      let sumLat=0,sumLon=0; for(const m of members){ sumLat+=m.lat; sumLon+=m.lon; }
+      const centLat=sumLat/count, centLon=sumLon/count;
+      const centLL=L.latLng(centLat,centLon); let sumD=0; for(const m of members){ sumD+=centLL.distanceTo([m.lat,m.lon]); }
+      const avgDist=sumD/count; return { lat:centLat, lon:centLon, count, avgDist };
+    }
+    // First hotspot
+    let best1=null; for(let i=0;i<arr.length;i++){ const cand=evaluateCenter(arr[i], arr); if(!cand) continue; if(!best1 || cand.count>best1.count || (cand.count===best1.count && cand.avgDist<best1.avgDist)) best1=cand; }
+    // Second hotspot: consider candidates whose centers are at least HOTSPOT_MIN_CENTER_SEP_M apart from first
+    let best2=null; if(best1){
+      for(let i=0;i<arr.length;i++){
+        const cand=evaluateCenter(arr[i], arr); if(!cand) continue;
+        const dist = L.latLng(best1.lat,best1.lon).distanceTo([cand.lat,cand.lon]);
+        if(dist < HOTSPOT_MIN_CENTER_SEP_M) continue;
+        if(!best2 || cand.count>best2.count || (cand.count===best2.count && cand.avgDist<best2.avgDist)) best2=cand;
+      }
+    }
+    const list = best2 ? [best1,best2] : (best1 ? [best1] : []);
+    hotspotData=list; saveHotspot(list); updateHotspotVisibility();
+  }
+
+  // On load, draw last known hotspots so it's consistent across sessions
+  try{ const saved=loadHotspot(); if(saved && saved.length){ hotspotData=saved; drawHotspots(saved); } }catch(_){ }
   const innerPane = map.createPane('inner'); innerPane.style.zIndex=401; innerPane.classList.add('inner-pane','gray-all');
   L.tileLayer('https://{s}.tile.openstreetmap.fr/hot/{z}/{x}/{y}.png',{ attribution:'© OpenStreetMap', maxZoom:22, pane:'inner' }).addTo(map);
 
@@ -540,9 +601,11 @@ startRequestsListeners(currentUser.uid);
     } else {
       markers.get(p.id).setIcon(icon);
     }
+    // Hotspot may need recomputing when markers change (always based on All)
+    scheduleHotspotRecompute();
   }
   function removeMarker(id){ const m=markers.get(id); if(m){ map.removeLayer(m); markers.delete(id); } }
-  function reFilterMarkers(){ lastPingCache.forEach((p,id)=>{ const allowed=shouldShow(p); const on=markers.has(id); if(allowed&&!on) upsertMarker(p); else if(!allowed&&on) removeMarker(id); }); }
+  function reFilterMarkers(){ lastPingCache.forEach((p,id)=>{ const allowed=shouldShow(p); const on=markers.has(id); if(allowed&&!on) upsertMarker(p); else if(!allowed&&on) removeMarker(id); }); updateHotspotVisibility(); }
   function restyleMarkers(){ markers.forEach((m,id)=>{ const p=lastPingCache.get(id); if(!p) return; const isPotw=!!(currentPotw && currentPotw.id===id); m.setIcon(iconForPing(p, isPotw)); }); }
 
   function startLive(){
@@ -560,6 +623,8 @@ startRequestsListeners(currentUser.uid);
     });
     // 🔑 Ensure PotW is re-evaluated on every live update
     recomputePotw().catch(console.error);
+    // 🔥 Recompute hotspot after snapshot processed
+    scheduleHotspotRecompute();
   }, e=>{ console.error(e); showToast((e.code||'error')+': '+(e.message||'live error')); });
 
   }
