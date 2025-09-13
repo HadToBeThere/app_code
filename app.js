@@ -2,13 +2,8 @@ window.addEventListener('load', async () => {
   /* --------- Splash --------- */
   const splash = document.getElementById('splash');
   const startGlobe = document.getElementById('startGlobe');
-  const openCreateAccount = document.getElementById('openCreateAccount');
-  const openSignIn = document.getElementById('openSignIn');
-  const continueGuest = document.getElementById('continueGuest');
+  // Splash: block all interactions until PRESS START
   startGlobe.addEventListener('click', () => { splash.style.opacity='0'; setTimeout(()=>splash.style.display='none',450); });
-  openCreateAccount.onclick = ()=> openModal('createAcctModal');
-  openSignIn.onclick = ()=> openModal('signInModal');
-  continueGuest.onclick = ()=> enterGuest();
 
   /* --------- Config --------- */
   const DEFAULT_CENTER = [45.5048, -73.5772];
@@ -16,6 +11,8 @@ window.addEventListener('load', async () => {
   const MAX_PINGS_PER_DAY = 3;
   const MIN_MILLIS_BETWEEN_PINGS = 5*60*1000; // 5 minutes
   const LIVE_WINDOW_MS = 24*3600*1000;
+  // Dev/test: unlimited ping whitelist by email
+  const UNLIMITED_EMAILS = new Set(['tobias.dicker@mail.mcgill.ca']);
 
   // Size curve constants
   const BASE_RADIUS = 10;                 // px at 0 net likes
@@ -42,14 +39,58 @@ window.addEventListener('load', async () => {
   firebase.initializeApp(firebaseConfig);
   const auth = firebase.auth();
   const db   = firebase.firestore();
+  // Ensure session persists across reloads
+  try{ await auth.setPersistence(firebase.auth.Auth.Persistence.NONE); }catch(e){ console.warn('persistence', e); }
 
   /* --------- Helpers --------- */
   const $ = s=>document.querySelector(s);
   const $$ = s=>document.querySelectorAll(s);
   const toastEl = $('#toast');
   const showToast=(msg)=>{ toastEl.textContent=msg; toastEl.classList.add('show'); setTimeout(()=>toastEl.classList.remove('show'),6000); };
-  function openModal(id){ document.getElementById(id).classList.add('open'); }
-  function closeModal(id){ document.getElementById(id).classList.remove('open'); }
+  function isUnlimited(){
+    try{
+      const e = (auth.currentUser && auth.currentUser.email || '').toLowerCase();
+      return !!(e && UNLIMITED_EMAILS.has(e));
+    }catch(_){ return false; }
+  }
+  function anyModalOpen(){ return document.querySelector('.modal.open') || document.querySelector('.sheet.open'); }
+  function applyModalOpenClass(){ 
+    try{ 
+      const hasModal = anyModalOpen();
+      if(hasModal){ 
+        document.body.classList.add('modal-open'); 
+      } else { 
+        document.body.classList.remove('modal-open'); 
+      }
+      // Don't disable buttons - they should always be clickable
+      const profileWidget = document.getElementById('profileWidget');
+      const bellBtn = document.getElementById('bellBtn');
+      if(profileWidget) profileWidget.style.pointerEvents = 'auto';
+      if(bellBtn) bellBtn.style.pointerEvents = 'auto';
+    }catch(_){ } 
+  }
+  function openModal(id){ document.getElementById(id).classList.add('open'); applyModalOpenClass(); }
+  function closeModal(id){ document.getElementById(id).classList.remove('open'); applyModalOpenClass(); }
+
+  // Unified time-ago formatter: s (<60), m (<60), h (<24), then d
+  function timeAgo(input){
+    try{
+      let ts = input;
+      if(!ts) return '0s ago';
+      if(typeof ts.toDate === 'function') ts = ts.toDate().getTime();
+      else if(ts instanceof Date) ts = ts.getTime();
+      ts = Number(ts)||0;
+      const diff = Math.max(0, Date.now() - ts);
+      const secs = Math.floor(diff/1000);
+      if(secs < 60) return `${secs}s ago`;
+      const mins = Math.floor(secs/60);
+      if(mins < 60) return `${mins}m ago`;
+      const hours = Math.floor(mins/60);
+      if(hours < 24) return `${hours}h ago`;
+      const days = Math.floor(hours/24);
+      return `${days}d ago`;
+    }catch(_){ return '0s ago'; }
+  }
 
   function enableColorZone() {
     const pane = document.querySelector('.leaflet-pane.inner-pane');
@@ -68,12 +109,74 @@ window.addEventListener('load', async () => {
 async function refreshAuthUI(user){
   currentUser = user || auth.currentUser || null;
 
-  if(currentUser){
-    // Hide auth bar, show chip
-    authBar.style.display='none';
-    userChip.style.display='inline-flex';
-    userChip.textContent = currentUser.isAnonymous ? 'Guest' : (currentUser.displayName || 'Signed in');
+  // Update profile widget (avatar + name)
+  try{
+    const w = document.getElementById('profileWidget');
+    const av = document.getElementById('profileAvatar');
+    const nm = document.getElementById('profileName');
+    const signInTop = document.getElementById('signInTop');
+    if(currentUser){
+      // Prefer handle for display; never auto-use Google photo
+      let handle = null, uploadedPhoto = null;
+      try{ const udoc = await usersRef.doc(currentUser.uid).get(); if(udoc.exists){ handle = udoc.data().handle||null; uploadedPhoto = udoc.data().photoURL || null; } }catch(_){ }
+      if(nm) nm.textContent = handle ? handle : (currentUser.displayName || 'Friend');
+      if(av){ 
+        if(uploadedPhoto){ 
+          av.style.backgroundImage = `url("${uploadedPhoto}")`; 
+          av.style.backgroundSize = 'cover';
+          av.style.backgroundPosition = 'center';
+          av.style.backgroundRepeat = 'no-repeat';
+          av.classList.add('custom-avatar');
+          console.log('Updated profile avatar with:', uploadedPhoto.substring(0, 50) + '...');
+        } else { 
+          av.style.backgroundImage=''; 
+          av.classList.remove('custom-avatar');
+        } 
+      }
+      
+      // Also update the profile modal avatar
+      const profileModalAvatar = document.getElementById('ownProfileAvatar');
+      if(profileModalAvatar) {
+        if(uploadedPhoto) {
+          profileModalAvatar.style.backgroundImage = `url("${uploadedPhoto}")`;
+          profileModalAvatar.style.backgroundSize = 'cover';
+          profileModalAvatar.style.backgroundPosition = 'center';
+          profileModalAvatar.style.backgroundRepeat = 'no-repeat';
+          profileModalAvatar.classList.add('custom-avatar');
+          console.log('Updated profile modal avatar with:', uploadedPhoto.substring(0, 50) + '...');
+        } else {
+          profileModalAvatar.style.backgroundImage = `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='128' height='128' viewBox='0 0 24 24'%3E%3Ccircle cx='12' cy='8' r='4' fill='%23cccccc'/%3E%3Cpath d='M4 20c0-4.418 3.582-8 8-8s8 3.582 8 8' fill='%23e6e6e6'/%3E%3C/svg%3E")`;
+          profileModalAvatar.style.backgroundSize = 'cover';
+          profileModalAvatar.style.backgroundPosition = 'center';
+          profileModalAvatar.style.backgroundRepeat = 'no-repeat';
+          profileModalAvatar.classList.remove('custom-avatar');
+        }
+      }
+      
+      // Set default silhouettes for any avatar elements that don't have custom images
+      const allAvatars = document.querySelectorAll('.profile-avatar');
+      allAvatars.forEach(avatar => {
+        if (!avatar.classList.contains('custom-avatar')) {
+          avatar.style.backgroundImage = `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='128' height='128' viewBox='0 0 24 24'%3E%3Ccircle cx='12' cy='8' r='4' fill='%23cccccc'/%3E%3Cpath d='M4 20c0-4.418 3.582-8 8-8s8 3.582 8 8' fill='%23e6e6e6'/%3E%3C/svg%3E")`;
+          avatar.style.backgroundSize = 'cover';
+          avatar.style.backgroundPosition = 'center';
+          avatar.style.backgroundRepeat = 'no-repeat';
+        }
+      });
+      if(w) w.style.display = 'flex';
+      if(signInTop) signInTop.style.display = 'none';
+      enableColorZone();
+    }else{
+      if(nm) nm.textContent = 'Sign in';
+      if(av){ av.style.backgroundImage=''; }
+      if(w) w.style.display = 'none';
+      if(signInTop) signInTop.style.display = 'inline-flex';
+      // Close any open profile/settings modals
+      try{ document.getElementById('profileModal').classList.remove('open'); }catch(_){ }
+    }
+  }catch(_){ }
 
+  if(currentUser){
     enableColorZone();
     try{
       if(!currentUser.isAnonymous){
@@ -94,18 +197,20 @@ startRequestsListeners(currentUser.uid);
       }
     }catch(e){ console.error('refreshAuthUI:', e); }
 
-    // Close splash if still visible
-    if(splash && splash.style.display!=='none'){
-      splash.style.opacity='0'; setTimeout(()=>splash.style.display='none',450);
-    }
+    // Do not auto-close splash; only PRESS START hides it
   } else {
     // Signed out
-    authBar.style.display='flex'; userChip.style.display='none';
     myFriends = new Set();
     if(typeof notifUnsub === 'function') notifUnsub();
     notifBadge.style.display='none';
     disableColorZone();
     $('#quotaText').textContent=`0/${MAX_PINGS_PER_DAY} pings today`;
+    // Reset filters to All so pings remain visible when signed out
+    try{
+      filterMode = 'all';
+      document.querySelectorAll('#filterSeg button').forEach(b=>b.classList.remove('active'));
+      const btnAll = document.querySelector('#filterSeg button[data-mode="all"]'); if(btnAll) btnAll.classList.add('active');
+    }catch(_){ }
     reFilterMarkers();
   }
 
@@ -113,122 +218,130 @@ startRequestsListeners(currentUser.uid);
   recomputePotw().catch(console.error);
 }
 
+  // Hard UI flip helper (in case listeners/races delay refresh)
+  function forceAuthUI(user){
+    try{ refreshAuthUI(user); }catch(_){ }
+  }
 
-  // Montreal start-of-week (Monday 00:00)
-  function startOfWeekMontreal(d=new Date()){
-    const fmt = new Intl.DateTimeFormat('en-CA', { timeZone: TZ, year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', second:'2-digit', hour12:false });
-    const parts = fmt.formatToParts(d).reduce((o,p)=> (o[p.type]=p.value, o), {});
-    const y = +parts.year, m = +parts.month, day = +parts.day;
-    const todayMid = new Date(new Date(`${y}-${String(m).padStart(2,'0')}-${String(day).padStart(2,'0')}T00:00:00`).toLocaleString('en-CA', { timeZone: TZ }));
-    const dow = new Date(todayMid.toLocaleString('en-CA', { timeZone: TZ })).getDay(); // 0=Sun
-    const daysFromMon = (dow===0 ? 6 : dow-1);
-    const ms = todayMid.getTime() - daysFromMon*ONE_DAY;
-    return new Date(ms);
+
+  // Week start (Monday 00:00) robust to TZ issues
+  function startOfWeekMondayLocal(now = new Date()){
+    const local = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
+    const dow = local.getDay(); // 0=Sun,1=Mon,...
+    const daysFromMon = (dow === 0 ? 6 : dow - 1);
+    return new Date(local.getTime() - daysFromMon * ONE_DAY);
   }
   function isThisWeek(ts){
-    const wStart = startOfWeekMontreal();
+    const wStart = startOfWeekMondayLocal();
     return ts >= wStart.getTime();
   }
 
   /* --------- Auth UI --------- */
-  const authBar=$('#authBar'), userChip=$('#userChip');
-  $('#openSignInTop').onclick=()=>openModal('signInModal');
-  $('#openCreateTop').onclick=()=>openModal('createAcctModal');
-  $('#guestTop').onclick=()=>enterGuest();
+  const profileWidget = document.getElementById('profileWidget');
+  const profileAvatar = document.getElementById('profileAvatar');
+  const profileName = document.getElementById('profileName');
+  // If returning from Google redirect, apply UI immediately
+  // Do not auto open or redirect into sign-in; only when user clicks
+  try{ const rr = await auth.getRedirectResult(); if(rr && rr.user){ /* keep splash until user presses start */ await refreshAuthUI(rr.user); } }catch(e){ console.warn('redirect result', e); }
+  // Use event delegation for profile widget
+  document.addEventListener('click', (e) => {
+    if(e.target.id === 'profileWidget' || e.target.closest('#profileWidget')){
+      e.stopPropagation(); // Prevent map click handler from firing
+      const u = auth.currentUser || null;
+      if(!u){ openModal('signInModal'); return; }
+      // Open modal immediately; load data after
+      try{ openModal('profileModal'); }catch(_){ }
+      openOwnProfile().catch((e)=>{ console.error('openOwnProfile failed', e); /* keep modal open even if data load fails */ });
+    }
+  });
+  const signInTopBtn = document.getElementById('signInTop');
+  if(signInTopBtn){ signInTopBtn.onclick = ()=> openModal('signInModal'); }
 
   $('#closeSignIn').onclick=()=>closeModal('signInModal');
-  $('#closeCreate').onclick=()=>closeModal('createAcctModal');
 
-  // Email/password sign in
-  $('#doSignIn').onclick = async ()=>{
-    try{
-      const email=$('#siEmail').value.trim(), pass=$('#siPass').value;
-      await auth.signInWithEmailAndPassword(email, pass);
-      closeModal('signInModal');
-    }catch(e){ console.error(e); showToast(e.message||'Sign in failed'); }
-  };
-
-  // Google sign in (block brand-new accounts)
-  $('#doGoogle').onclick = async ()=>{
+  // Central Google sign-in flow (also supports upgrading Guest)
+  async function signInWithGoogle(){
     try{
       const provider = new firebase.auth.GoogleAuthProvider();
-      const result = await auth.signInWithPopup(provider);
-      if(result.additionalUserInfo && result.additionalUserInfo.isNewUser){
-        try{ await result.user.delete(); }catch(_){} 
-        await auth.signOut();
-        showToast('This Google account isn’t linked here yet. Please Create account first.');
+      provider.setCustomParameters({ prompt: 'select_account' });
+      const isEmbedded = (()=>{ try{ return window.self !== window.top; }catch(_){ return true; } })();
+      const isHttp = (location.protocol === 'http:' || location.protocol === 'https:');
+      if(!isHttp || isEmbedded){
+        await auth.signInWithRedirect(provider);
         return;
       }
-      closeModal('signInModal');
+      let result;
+      const userBefore = auth.currentUser;
+      if(userBefore && userBefore.isAnonymous){
+        result = await userBefore.linkWithPopup(provider);
+      }else{
+        result = await auth.signInWithPopup(provider);
+      }
+      const user = result.user; if(!user) throw new Error('Google sign-in returned no user');
+      const isNew = !!(result.additionalUserInfo && result.additionalUserInfo.isNewUser);
+      if(isNew){
+        // Create with default random handle
+        const base = (user.displayName || (user.email ? user.email.split('@')[0] : 'user')).toLowerCase().replace(/[^a-z0-9_.]/g,'');
+        let attempt = (base.slice(0,12) || 'user') + (Math.floor(Math.random()*9000)+1000);
+        let finalHandle = attempt;
+        try{
+          for(let i=0;i<30;i++){
+            const doc = await db.collection('handles').doc(finalHandle).get();
+            if(!doc.exists){ break; }
+            finalHandle = (base.slice(0,10) || 'user') + (Math.floor(Math.random()*900000)+100000);
+          }
+          await db.collection('handles').doc(finalHandle).set({ uid:user.uid, createdAt: firebase.firestore.FieldValue.serverTimestamp() });
+        }catch(_){ }
+        await usersRef.doc(user.uid).set({
+          displayName: user.displayName || 'Friend',
+          email: user.email || null,
+          handle: finalHandle,
+          handleLC: finalHandle.toLowerCase(),
+          createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+          friendIds: [], lastPingAt: null, unreadCount: 0, isSubscriber:false
+        }, { merge:true });
+      }else{
+        await usersRef.doc(user.uid).set({ displayName: user.displayName || 'Friend' }, { merge:true });
+        await ensureIdentityMappings(user);
+      }
+      try{ document.getElementById('signInModal').classList.remove('open'); }catch{}
+      // Immediate forced UI flip, then full refresh
+      forceAuthUI(user);
+      await refreshAuthUI(user);
+      // Extra safety: run a delayed refresh and ensure visible change
+      setTimeout(()=>{ try{ forceAuthUI(auth.currentUser); refreshAuthUI(auth.currentUser); }catch(e){} }, 80);
     }catch(e){
       console.error(e);
-      showToast(e.message || 'Google sign-in failed');
+      // If linking Guest -> Google fails because Google account already exists, sign in with that credential
+      try{
+        const userBefore = auth.currentUser;
+        if(userBefore && userBefore.isAnonymous && e && e.code==='auth/credential-already-in-use' && e.credential){
+          const cred = e.credential; // OAuthCredential
+          const signed = await auth.signInWithCredential(cred);
+          const user = signed && signed.user ? signed.user : auth.currentUser;
+          if(user){
+            await usersRef.doc(user.uid).set({ displayName: user.displayName || 'Friend', email: user.email || null }, { merge:true });
+            forceAuthUI(user);
+            await refreshAuthUI(user);
+            setTimeout(()=>{ try{ forceAuthUI(auth.currentUser); refreshAuthUI(auth.currentUser); }catch(_){ } }, 80);
+            return;
+          }
+        }
+      }catch(err){ console.error('credential-in-use recovery failed', err); }
+      // Fallback to redirect in environments where popups are blocked or unsupported
+      if(e && (e.code==='auth/popup-blocked' || e.code==='auth/operation-not-supported-in-this-environment')){
+        try{ const provider = new firebase.auth.GoogleAuthProvider(); provider.setCustomParameters({ prompt: 'select_account' }); await auth.signInWithRedirect(provider); return; }catch(err){ console.error('redirect failed', err); }
+      }
+      let msg = e && e.message ? e.message : 'Google sign-in failed';
+      if(e.code==='auth/unauthorized-domain') msg='Unauthorized domain: add this origin in Firebase Auth → Settings → Authorized domains.';
+      else if(e.code==='auth/operation-not-allowed') msg='Enable Google provider in Firebase Auth → Sign-in method.';
+      else if(e.code==='auth/popup-blocked' || e.code==='auth/popup-closed-by-user') msg='Popup blocked/closed. Allow popups and try again.';
+      else if(e.code==='auth/credential-already-in-use') msg='This Google account is already linked. Signing you into that account failed—try again.';
+      showToast(msg);
     }
-  };
-
-  // Create account
-  // Google sign in — supports:
-// 1) New users (creates their profile doc)
-// 2) Upgrading an anonymous guest via linkWithPopup
-// Google sign in — handles new users and upgrading a Guest via link
-$('#doGoogle').onclick = async () => {
-  try {
-    const provider = new firebase.auth.GoogleAuthProvider();
-    provider.setCustomParameters({ prompt: 'select_account' });
-
-    let result;
-    const userBefore = auth.currentUser;
-
-    if (userBefore && userBefore.isAnonymous) {
-      // Upgrade Guest to Google
-      result = await userBefore.linkWithPopup(provider);
-    } else {
-      // Normal Google sign-in
-      result = await auth.signInWithPopup(provider);
-    }
-
-    const user = result.user;
-    if (!user) throw new Error('Google sign-in returned no user');
-
-    // Create/merge user doc on first sign-in
-    const isNew = !!(result.additionalUserInfo && result.additionalUserInfo.isNewUser);
-    if (isNew) {
-      await usersRef.doc(user.uid).set({
-        displayName: user.displayName || 'Friend',
-        email: user.email || null,
-        createdAt: firebase.firestore.FieldValue.serverTimestamp(),
-        friendIds: [],
-        lastPingAt: null,
-        unreadCount: 0,
-        isSubscriber: false
-      }, { merge: true });
-    } else {
-      await usersRef.doc(user.uid).set({
-        displayName: user.displayName || 'Friend'
-      }, { merge: true });
-    }
-
-    // Close the modal now
-    document.getElementById('signInModal').classList.remove('open');
-
-    // 🔑 Immediately refresh UI (even if onAuthStateChanged doesn't fire)
-    await refreshAuthUI(user);
-
-  } catch (e) {
-    console.error(e);
-    let msg = e && e.message ? e.message : 'Google sign-in failed';
-    if (e.code === 'auth/unauthorized-domain') {
-      msg = 'Unauthorized domain: add your dev origin to Firebase Auth → Settings → Authorized domains.';
-    } else if (e.code === 'auth/operation-not-allowed') {
-      msg = 'Enable the Google provider in Firebase Auth → Sign-in method.';
-    } else if (e.code === 'auth/popup-blocked' || e.code === 'auth/popup-closed-by-user') {
-      msg = 'Popup was blocked/closed. Allow popups and try again.';
-    } else if (e.code === 'auth/credential-already-in-use') {
-      msg = 'This Google account is already linked to another user. Sign out and use Sign in (not link).';
-    }
-    showToast(msg);
   }
-};
+  $('#doGoogle').onclick = ()=>signInWithGoogle();
+
 
         
 
@@ -244,10 +357,10 @@ $('#doGoogle').onclick = async () => {
     }catch(e){ console.error(e); showToast('Guest sign-in failed'); }
   }
 
-  userChip.onclick = async ()=>{ try{ await auth.signOut(); showToast('Signed out'); }catch(e){ showToast('Sign out failed'); } };
+  // Sign out can be added inside profile if needed
 
   /* --------- Map --------- */
-  const map = L.map('map',{ center:DEFAULT_CENTER, zoom:15, minZoom:0, maxZoom:22, zoomAnimation:true, markerZoomAnimation:true, fadeAnimation:true, zoomSnap:.5, wheelPxPerZoomLevel:45, wheelDebounceTime:40, scrollWheelZoom:true, doubleClickZoom:false, dragging:true, touchZoom:'center' });
+  const map = L.map('map',{ center:DEFAULT_CENTER, zoom:15, minZoom:0, maxZoom:22, zoomAnimation:true, markerZoomAnimation:true, fadeAnimation:true, zoomSnap:.5, wheelPxPerZoomLevel:45, wheelDebounceTime:40, scrollWheelZoom:true, doubleClickZoom:false, dragging:true, touchZoom:'center', zoomControl:false });
   const innerPane = map.createPane('inner'); innerPane.style.zIndex=401; innerPane.classList.add('inner-pane','gray-all');
   L.tileLayer('https://{s}.tile.openstreetmap.fr/hot/{z}/{x}/{y}.png',{ attribution:'© OpenStreetMap', maxZoom:22, pane:'inner' }).addTo(map);
 
@@ -286,20 +399,8 @@ $('#doGoogle').onclick = async () => {
   const votesRef = db.collection('votes');
   const usersRef = db.collection('users');
 
-  /* --------- Friends toggle ---------- */
+  /* --------- Leftbar contains only Filters now ---------- */
   const leftbar = document.getElementById('leftbar');
-  const friendsToggle = document.getElementById('friendsToggle');
-  function updateFriendsToggle(){
-    if(leftbar.classList.contains('hidden')){
-      friendsToggle.textContent = 'Show Friends ▶';
-      friendsToggle.style.top = '60px';
-    }else{
-      friendsToggle.textContent = 'Hide Friends ◀';
-      friendsToggle.style.top = '112px';
-    }
-  }
-  friendsToggle.onclick = ()=>{ leftbar.classList.toggle('hidden'); updateFriendsToggle(); };
-  updateFriendsToggle();
 
   /* --------- Filter (All / Friends+Me / Me) --------- */
   let filterMode = 'all'; // 'all' | 'friends' | 'me'
@@ -446,8 +547,8 @@ $('#doGoogle').onclick = async () => {
 
   function startLive(){
     if(unsubscribe) unsubscribe();
-    const since=Date.now()-LIVE_WINDOW_MS;
-    unsubscribe=pingsRef.where('createdAt','>=',new Date(since))
+    // Avoid depending on client clock (can hide recent pings if clock is wrong)
+    unsubscribe = pingsRef
   .orderBy('createdAt','desc').limit(800)
   .onSnapshot(s=>{
     s.docChanges().forEach(ch=>{
@@ -472,16 +573,69 @@ $('#doGoogle').onclick = async () => {
     try{ const qs=await pingsRef.where('authorId','==',uid).where('createdAt','>=',start).get(); return qs.size; }
     catch{ const qs=await pingsRef.where('authorId','==',uid).get(); let c=0; qs.forEach(d=>{ const t=d.data().createdAt?.toDate?.(); if(t && t>=start) c++; }); return c; }
   }
-  async function refreshQuota(uid){ const used=await todayCount(uid); $('#quotaText').textContent=`${Math.min(used,MAX_PINGS_PER_DAY)}/${MAX_PINGS_PER_DAY} pings today`; return used; }
+  async function refreshQuota(uid){
+    if(isUnlimited()){ $('#quotaText').textContent=`∞/${MAX_PINGS_PER_DAY} pings today`; return 0; }
+    const used=await todayCount(uid);
+    $('#quotaText').textContent=`${Math.min(used,MAX_PINGS_PER_DAY)}/${MAX_PINGS_PER_DAY} pings today`;
+    return used;
+  }
 
-  /* --------- S3 upload STUB (replace later) --------- */
-  async function uploadImageToS3(file){
-    return 'https://via.placeholder.com/800x600.png?text=Ping+Image';
+  /* --------- Image upload (Firebase Storage) --------- */
+  async function uploadPingImage(file, uid){
+    // Compress large images to avoid oversized data URLs in local dev
+    async function compressToDataUrl(file, maxWidth=1600, quality=0.85){
+      return new Promise((resolve)=>{
+        const img=new Image(); const reader=new FileReader();
+        reader.onload=()=>{ img.src=reader.result; };
+        img.onload=()=>{
+          const scale=Math.min(1, maxWidth/Math.max(img.width, img.height));
+          const w=Math.round(img.width*scale), h=Math.round(img.height*scale);
+          const c=document.createElement('canvas'); c.width=w; c.height=h; const ctx=c.getContext('2d');
+          ctx.drawImage(img,0,0,w,h);
+          // Try jpeg first, fallback to png if needed
+          let url=c.toDataURL('image/jpeg', quality);
+          // Guard: Firestore field limit is 1,048,487 bytes; aim smaller
+          if(url.length>950000){ url=c.toDataURL('image/jpeg', 0.7); }
+          if(url.length>950000){ url=c.toDataURL('image/jpeg', 0.6); }
+          resolve(url);
+        };
+        reader.readAsDataURL(file);
+      });
+    }
+    // For local development, always use data URL to avoid CORS issues
+    if(location.hostname === 'localhost' || location.hostname === '127.0.0.1'){
+      console.log('Local development detected, compressing to data URL');
+      return await compressToDataUrl(file);
+    }
+    
+    try{
+      const storage = firebase.storage();
+      const extGuess = (file && file.name && file.name.includes('.')) ? file.name.split('.').pop().toLowerCase() : 'jpg';
+      const ext = (extGuess || 'jpg').replace(/[^a-z0-9]/g,'').slice(0,5) || 'jpg';
+      const path = `pings/${uid}/${Date.now()}_${Math.random().toString(36).slice(2,8)}.${ext}`;
+      const ref = storage.ref().child(path);
+      
+      const metadata = {
+        contentType: file.type || 'image/jpeg',
+        cacheControl: 'public, max-age=31536000'
+      };
+      
+      const snap = await ref.put(file, metadata);
+      const url = await snap.ref.getDownloadURL();
+      return url;
+    }catch(e){ 
+      console.error('uploadPingImage', e); 
+      // Fallback: compress to data URL
+      console.log('Upload failed, compressing to data URL fallback');
+      return await compressToDataUrl(file);
+    }
   }
 
   /* --------- Create ping --------- */
   const attachInput = $('#pingImage');
   const subscribeBtn = $('#subscribeBtn');
+  const attachPreview = document.getElementById('attachPreview');
+  const attachPreviewImg = document.getElementById('attachPreviewImg');
 
   subscribeBtn.onclick = ()=>{
     if(!currentUser || currentUser.isAnonymous) return showToast('Sign in to subscribe');
@@ -505,8 +659,38 @@ $('#doGoogle').onclick = async () => {
     const base=(userPos && userPos.distanceTo(FENCE_CENTER)<=RADIUS_M) ? userPos : FENCE_CENTER;
     latEl.value=base.lat.toFixed(6); lonEl.value=base.lng.toFixed(6);
     openModal('createModal');
+    // Disable attach for non-subscribers
+    try{
+      const lbl = document.getElementById('attachLabel');
+      if(attachInput) attachInput.disabled = !isSubscriber;
+      if(lbl){
+        if(!isSubscriber){ lbl.classList.add('muted'); lbl.style.pointerEvents='none'; lbl.title='Subscribe to attach images'; }
+        else { lbl.classList.remove('muted'); lbl.style.pointerEvents='auto'; lbl.title='Attach Image'; }
+      }
+      // Reset preview and show attach label on open
+      const prev = document.getElementById('attachPreview');
+      if(prev) prev.style.display = 'none';
+      if(lbl) lbl.style.display = 'inline-flex';
+      if(attachInput) attachInput.value = '';
+    }catch(_){ }
   };
-  $('#cancelCreate').onclick=()=>closeModal('createModal');
+  $('#cancelCreate').onclick=()=>{ try{ const prev=document.getElementById('attachPreview'); const lbl=document.getElementById('attachLabel'); if(prev) prev.style.display='none'; if(lbl) lbl.style.display='inline-flex'; if(attachInput) attachInput.value=''; }catch(_){ } closeModal('createModal'); };
+  if(attachInput){
+    attachInput.onchange = ()=>{
+      try{
+        const f = attachInput.files && attachInput.files[0];
+        if(f){
+          const url = URL.createObjectURL(f);
+          if(attachPreviewImg) attachPreviewImg.src = url;
+          if(attachPreview) attachPreview.style.display = 'block';
+          const lbl = document.getElementById('attachLabel'); if(lbl) lbl.style.display = 'none';
+        } else {
+          if(attachPreview) attachPreview.style.display = 'none';
+          const lbl = document.getElementById('attachLabel'); if(lbl) lbl.style.display = 'inline-flex';
+        }
+      }catch(_){ }
+    };
+  }
 
   map.on('click', e=>{
     if(!currentUser || currentUser.isAnonymous) return;
@@ -524,9 +708,13 @@ $('#doGoogle').onclick = async () => {
       if(currentUser.isAnonymous) return showToast('Guests can’t post. Create an account.');
       const udoc = await getUserDoc(currentUser.uid) || {};
       const lastAt = udoc.lastPingAt?.toDate ? udoc.lastPingAt.toDate().getTime() : 0;
-      if(Date.now()-lastAt < MIN_MILLIS_BETWEEN_PINGS) return showToast('Slow down—try again in a few minutes');
-      const used=await refreshQuota(currentUser.uid);
-      if(used>=MAX_PINGS_PER_DAY) return showToast('Daily limit reached');
+      if(!isUnlimited()){
+        if(Date.now()-lastAt < MIN_MILLIS_BETWEEN_PINGS) return showToast('Slow down—try again in a few minutes');
+        const used=await refreshQuota(currentUser.uid);
+        if(used>=MAX_PINGS_PER_DAY) return showToast('Daily limit reached');
+      } else {
+        await refreshQuota(currentUser.uid);
+      }
 
       const text=($('#pingText').value||'').trim();
       let lat=parseFloat($('#lat').value), lon=parseFloat($('#lon').value);
@@ -539,7 +727,7 @@ $('#doGoogle').onclick = async () => {
       if(file){
         if(!isSubscriber){ return showToast('Subscribe to attach images'); }
         if(file.size > 10*1024*1024) return showToast('Image must be ≤ 10MB');
-        imageUrl = await uploadImageToS3(file); // replace later
+        imageUrl = await uploadPingImage(file, currentUser.uid);
       }
 
       const ref = await pingsRef.add({
@@ -565,30 +753,59 @@ $('#doGoogle').onclick = async () => {
   /* --------- Sheet / votes / comments / reports --------- */
   const sheet=$('#pingSheet'), sheetText=$('#sheetText'), sheetMeta=$('#sheetMeta');
   const sheetImage=$('#sheetImage'), sheetImgEl=$('#sheetImgEl');
+  const viewImageBtn=$('#viewImageBtn');
   const reactBar=$('#reactBar'), commentsEl=$('#comments'), commentInput=$('#commentInput');
   let openId=null, openUnsub=null, openCommentsUnsub=null;
 
   function openSheet(id){
     if(openUnsub) openUnsub(); if(openCommentsUnsub) openCommentsUnsub();
-    openId=id; sheet.classList.add('open');
+    openId=id; sheet.classList.add('open'); applyModalOpenClass();
 
     openUnsub = pingsRef.doc(id).onSnapshot(doc=>{
       if(!doc.exists){ sheet.classList.remove('open'); return; }
       const p={id:doc.id, ...doc.data()}; lastPingCache.set(p.id,p);
-      const mins=p.createdAt?.toDate ? Math.floor((Date.now()-p.createdAt.toDate().getTime())/60000) : 0;
-      sheetText.textContent=p.text; sheetMeta.textContent=`Near ${Number(p.lat).toFixed(5)}, ${Number(p.lon).toFixed(5)} • ${Math.max(0,mins)}m ago`;
-      if(p.imageUrl){ sheetImgEl.src=p.imageUrl; sheetImage.style.display='block'; } else { sheetImage.style.display='none'; }
+      sheetText.textContent=p.text; const created = p.createdAt?.toDate ? p.createdAt.toDate().getTime() : null; sheetMeta.textContent=`Near ${Number(p.lat).toFixed(5)}, ${Number(p.lon).toFixed(5)} • ${timeAgo(created)}`;
+      if(p.imageUrl){
+        // Do not show image by default; show a View button that only opens lightbox
+        sheetImgEl.src=p.imageUrl;
+        sheetImage.style.display='none';
+        if(viewImageBtn){ viewImageBtn.style.display='inline-flex'; viewImageBtn.onclick=()=>{ if(sheetImgEl && sheetImgEl.src){ const lb=document.getElementById('lightboxImg'); if(lb){ lb.src=sheetImgEl.src; openModal('imageLightbox'); } } } }
+      } else {
+        sheetImage.style.display='none';
+        if(viewImageBtn){ viewImageBtn.style.display='none'; viewImageBtn.onclick=null; }
+      }
       renderVoteBar(p); upsertMarker(p);
     });
 
     openCommentsUnsub = pingsRef.doc(id).collection('comments').orderBy('createdAt','desc').limit(200).onSnapshot(s=>{
       commentsEl.innerHTML=''; s.forEach(d=>{
-        const c=d.data(); const mins=c.createdAt?.toDate ? Math.floor((Date.now()-c.createdAt.toDate().getTime())/60000) : 0;
-        const div=document.createElement('div'); div.className='comment'; div.innerHTML=`${c.text}<br/><small>${Math.max(0,mins)}m ago</small>`; commentsEl.appendChild(div);
+        const c=d.data(); const when=c.createdAt||null;
+        const div=document.createElement('div'); div.className='comment'; div.innerHTML=`${c.text}<br/><small>${timeAgo(when)}</small>`; commentsEl.appendChild(div);
       });
     });
   }
-  $('#closeSheet').onclick=()=>{ sheet.classList.remove('open'); if(openUnsub) openUnsub(); if(openCommentsUnsub) openCommentsUnsub(); openId=null; };
+  $('#closeSheet').onclick=()=>{ sheet.classList.remove('open'); if(openUnsub) openUnsub(); if(openCommentsUnsub) openCommentsUnsub(); openId=null; applyModalOpenClass(); };
+
+  // Image lightbox behavior
+  try{
+    sheetImgEl.onclick = ()=>{ const lb=document.getElementById('lightboxImg'); if(sheetImgEl && sheetImgEl.src && lb){ lb.src = sheetImgEl.src; openModal('imageLightbox'); } };
+    document.getElementById('closeLightbox').onclick = ()=> closeModal('imageLightbox');
+  }catch(_){ }
+
+  // Remove attached image in create modal
+  try{
+    const removeAttachBtn = document.getElementById('removeAttachBtn');
+    if(removeAttachBtn){
+      removeAttachBtn.onclick = ()=>{
+        try{
+          if(attachPreviewImg) attachPreviewImg.src='';
+          if(attachPreview) attachPreview.style.display='none';
+          const lbl = document.getElementById('attachLabel'); if(lbl) lbl.style.display='inline-flex';
+          if(attachInput) attachInput.value='';
+        }catch(_){ }
+      };
+    }
+  }catch(_){ }
 
   function renderVoteBar(p){
     reactBar.innerHTML='';
@@ -750,19 +967,29 @@ $('#doGoogle').onclick = async () => {
         tx.update(bRef, { friendIds: firebase.firestore.FieldValue.arrayUnion(fromUid) });
         tx.set(db.collection('friendRequests').doc(toUid+'_'+fromUid), { status:'accepted', acceptedAt: firebase.firestore.FieldValue.serverTimestamp() }, { merge:true });
       });
-      // Notify both
-      usersRef.doc(fromUid).collection('notifications').add({ type:'friend_accept', partner: toUid, createdAt: firebase.firestore.FieldValue.serverTimestamp() });
-      usersRef.doc(toUid).collection('notifications').add({ type:'friend_accept', partner: fromUid, createdAt: firebase.firestore.FieldValue.serverTimestamp() });
+      // Notify both (dedupe)
+      try{
+        await Promise.all([
+          db.runTransaction(async tx=>{ const nref=usersRef.doc(fromUid).collection('notifications').doc('friend_accept_'+toUid); const snap=await tx.get(nref); if(!snap.exists){ tx.set(nref,{ type:'friend_accept', partner: toUid, createdAt: firebase.firestore.FieldValue.serverTimestamp() }); } }),
+          db.runTransaction(async tx=>{ const nref=usersRef.doc(toUid).collection('notifications').doc('friend_accept_'+fromUid); const snap=await tx.get(nref); if(!snap.exists){ tx.set(nref,{ type:'friend_accept', partner: fromUid, createdAt: firebase.firestore.FieldValue.serverTimestamp() }); } })
+        ]);
+      }catch(_){ }
       await refreshFriends();
       return;
     }
 
-    // Create pending request
+    // Create pending request (dedupe by id)
     await db.collection('friendRequests').doc(fromUid+'_'+toUid).set({
       from: fromUid, to: toUid, status:'pending', createdAt: firebase.firestore.FieldValue.serverTimestamp()
     });
-    // Notify recipient
-    usersRef.doc(toUid).collection('notifications').add({ type:'friend_req', from: fromUid, createdAt: firebase.firestore.FieldValue.serverTimestamp() });
+    // Notify recipient (dedupe via fixed doc id)
+    try{
+      await db.runTransaction(async tx=>{
+        const nref = usersRef.doc(toUid).collection('notifications').doc('friend_req_'+fromUid);
+        const snap = await tx.get(nref);
+        if(!snap.exists){ tx.set(nref,{ type:'friend_req', from: fromUid, createdAt: firebase.firestore.FieldValue.serverTimestamp() }); }
+      });
+    }catch(_){ }
   }
 
   async function acceptFriendRequest(reqId){
@@ -776,7 +1003,14 @@ $('#doGoogle').onclick = async () => {
       tx.update(bRef, { friendIds: firebase.firestore.FieldValue.arrayUnion(fromUid) });
       tx.update(rRef, { status:'accepted', acceptedAt: firebase.firestore.FieldValue.serverTimestamp() });
     });
-    usersRef.doc(fromUid).collection('notifications').add({ type:'friend_accept', partner: currentUser.uid, createdAt: firebase.firestore.FieldValue.serverTimestamp() });
+    // Notify sender (dedupe via fixed doc id)
+    try{
+      await db.runTransaction(async tx=>{
+        const nref = usersRef.doc(fromUid).collection('notifications').doc('friend_accept_'+currentUser.uid);
+        const snap = await tx.get(nref);
+        if(!snap.exists){ tx.set(nref,{ type:'friend_accept', partner: currentUser.uid, createdAt: firebase.firestore.FieldValue.serverTimestamp() }); }
+      });
+    }catch(_){ }
     await refreshFriends();
   }
   async function declineFriendRequest(reqId){
@@ -790,12 +1024,13 @@ $('#doGoogle').onclick = async () => {
     await rRef.set({ status:'canceled', decidedAt: firebase.firestore.FieldValue.serverTimestamp() }, { merge:true });
   }
 
-  // Requests UI
+  // Requests UI (Profile modal)
   let reqInUnsub=null, reqOutUnsub=null;
   function startRequestsListeners(uid){
     if(reqInUnsub) reqInUnsub(); if(reqOutUnsub) reqOutUnsub();
-    const inRef = db.collection('friendRequests').where('to','==',uid).where('status','==','pending').orderBy('createdAt','desc');
-    const outRef= db.collection('friendRequests').where('from','==',uid).where('status','==','pending').orderBy('createdAt','desc');
+    // Simplified queries to avoid index requirements
+    const inRef = db.collection('friendRequests').where('to','==',uid).where('status','==','pending');
+    const outRef= db.collection('friendRequests').where('from','==',uid).where('status','==','pending');
     reqInUnsub = inRef.onSnapshot(()=>updateRequestsUI().catch(console.error));
     reqOutUnsub = outRef.onSnapshot(()=>updateRequestsUI().catch(console.error));
   }
@@ -803,8 +1038,9 @@ $('#doGoogle').onclick = async () => {
   async function updateRequestsUI(){
     const cont = document.getElementById('requestsList'); if(!cont) return;
     if(!currentUser){ cont.innerHTML='<div class="muted">Sign in to see requests.</div>'; return; }
-    const inSS  = await db.collection('friendRequests').where('to','==',currentUser.uid).where('status','==','pending').orderBy('createdAt','desc').get();
-    const outSS = await db.collection('friendRequests').where('from','==',currentUser.uid).where('status','==','pending').orderBy('createdAt','desc').get();
+    // Simplified queries to avoid index requirements
+    const inSS  = await db.collection('friendRequests').where('to','==',currentUser.uid).where('status','==','pending').get();
+    const outSS = await db.collection('friendRequests').where('from','==',currentUser.uid).where('status','==','pending').get();
 
     const items=[];
     for(const doc of inSS.docs){ items.push({ id:doc.id, dir:'in', ...doc.data() }); }
@@ -833,50 +1069,398 @@ $('#doGoogle').onclick = async () => {
       row.appendChild(actions); cont.appendChild(row);
     }
   }
-/* --------- Friends (left bar) --------- */
-  const friendList=$('#friendList'); const myCodeEl=$('#myCode');
-  $('#refreshFriendsBtn').onclick=()=>refreshFriends();
-  $('#copyCode').onclick=()=>{ myCodeEl.select(); document.execCommand('copy'); showToast('Copied code'); };
+/* --------- Profile modal friend actions --------- */
+  const addFriendInputProfile = document.getElementById('addFriendInputProfile');
+  const addFriendBtnProfile = document.getElementById('addFriendBtnProfile');
+  if(addFriendBtnProfile){
+    addFriendBtnProfile.onclick = async ()=>{
+      const raw = (addFriendInputProfile && addFriendInputProfile.value || '').trim(); if(!raw) return;
+      if(!currentUser) return showToast('Sign in first');
+      const q = raw.toLowerCase();
+      try{
+        const targetUid = await resolveUserByHandleOrEmail(q);
+        if(!targetUid){ showToast('No user found'); return; }
+        if(targetUid===currentUser.uid){ showToast('That’s you!'); return; }
+        await sendFriendRequest(currentUser.uid, targetUid);
+        if(addFriendInputProfile) addFriendInputProfile.value=''; showToast('Friend request sent'); await updateRequestsUI();
+      }catch(e){ console.error(e); showToast('Could not send request'); }
+    };
+  }
 
-  $('#friendSearchBtn').onclick=async()=>{
-    const q=$('#friendSearch').value.trim(); if(!q) return;
-    try{
-      let match=null;
-      const qs = await usersRef.where('email','==',q).limit(1).get();
-      if(!qs.empty){ match={ id:qs.docs[0].id, ...qs.docs[0].data() }; }
-      if(!match && q.length>10){ const doc=await usersRef.doc(q).get(); if(doc.exists) match={ id:doc.id, ...doc.data() }; }
-      if(match){ $('#addFriendInput').value = match.id; showToast(`Found: ${match.displayName||'Friend'}`); }
-      else{ showToast('No match found'); }
-    }catch(e){ console.error(e); showToast('Search failed'); }
-  };
+  // Profile modal elements and behaviors
+  const profileModal = document.getElementById('profileModal');
+  const closeProfileBtn = document.getElementById('closeProfile');
+  if(closeProfileBtn){ closeProfileBtn.onclick = ()=> closeModal('profileModal'); }
+  // Sign out button inside profile modal
+  const signOutInProfile = document.getElementById('signOutInProfile');
+  if(signOutInProfile){ signOutInProfile.onclick = async ()=>{ try{ await auth.signOut(); closeModal('profileModal'); showToast('Signed out'); }catch(e){ showToast('Sign out failed'); } }; }
+  const ownAvatar = document.getElementById('ownProfileAvatar');
+  const emailDisplay = document.getElementById('emailDisplay');
+  const handleInput = document.getElementById('handleInput');
+  const saveHandle = document.getElementById('saveHandle');
+  // Legacy button (may not exist): define to avoid ReferenceError
+  const saveProfilePhoto = document.getElementById('saveProfilePhoto');
+  const openSettingsBtn = document.getElementById('openSettings');
+  const backToProfileBtn = document.getElementById('backToProfile');
+  const openChangePicBtn = document.getElementById('openChangePic');
+  const settingsImageInput = document.getElementById('settingsImageInput');
 
-  
-  $('#addFriendBtn').onclick=async()=>{
-    const raw=$('#addFriendInput').value.trim(); if(!raw) return;
-    if(!currentUser) return showToast('Sign in first');
-    const q=raw.toLowerCase();
+  const cropModal = document.getElementById('cropModal');
+  const cropImage = document.getElementById('cropImage');
+  const cropZoom = document.getElementById('cropZoom');
+  const closeCrop = document.getElementById('closeCrop');
+  const saveCroppedAvatar = document.getElementById('saveCroppedAvatar');
+
+  async function openOwnProfile(){
+    if(!currentUser){ openModal('signInModal'); return; }
     try{
-      const targetUid = await resolveUserByHandleOrEmail(q);
-      if(!targetUid){ showToast('No user found'); return; }
-      if(targetUid===currentUser.uid){ showToast('That’s you!'); return; }
-      await sendFriendRequest(currentUser.uid, targetUid);
-      $('#addFriendInput').value=''; showToast('Friend request sent'); await updateRequestsUI();
-    }catch(e){ console.error(e); showToast('Could not send request'); }
-  };
+      document.getElementById('profileModalTitle').textContent='Your Profile';
+      document.getElementById('ownProfileSection').style.display='block';
+      document.getElementById('otherProfileSection').style.display='none';
+      const gear = document.getElementById('openSettings'); if(gear) gear.style.display='inline-flex';
+      const back = document.getElementById('backToProfile'); if(back) back.style.display='none';
+      const settings = document.getElementById('settingsSection'); if(settings) settings.style.display='none';
+      const actions = document.getElementById('profileActions'); if(actions) actions.style.display='flex';
+      const signOutBtn = document.getElementById('signOutInProfile'); if(signOutBtn) signOutBtn.style.display='inline-flex';
+    }catch(_){ }
+    try{
+      // Load avatar from our Firestore user doc, not auth provider
+      if(ownAvatar){
+        try{
+          const d = await usersRef.doc(currentUser.uid).get();
+          const url = d.exists ? (d.data().photoURL || '') : '';
+          if(url){
+            ownAvatar.style.backgroundImage = `url("${url}")`;
+            ownAvatar.style.backgroundSize = 'cover';
+            ownAvatar.style.backgroundPosition = 'center';
+            ownAvatar.style.backgroundRepeat = 'no-repeat';
+            ownAvatar.classList.add('custom-avatar');
+          } else {
+            ownAvatar.style.backgroundImage = '';
+            ownAvatar.classList.remove('custom-avatar');
+          }
+        }catch(_){ }
+      }
+      if(handleInput){
+        try{ const d=await usersRef.doc(currentUser.uid).get(); const h=d.exists? (d.data().handle||'') : ''; handleInput.value = h || ''; }catch(_){ }
+      }
+      if(emailDisplay){ const d=await usersRef.doc(currentUser.uid).get(); const em = d.exists? (d.data().email||currentUser.email||''): (currentUser.email||''); emailDisplay.textContent = em || 'No email'; }
+    }catch(_){ }
+    await refreshFriends();
+    openModal('profileModal');
+  }
+
+  async function openOtherProfile(uid){
+    try{
+      const d = await usersRef.doc(uid).get(); const u = d.exists? d.data():{};
+      document.getElementById('profileModalTitle').textContent='Profile';
+      document.getElementById('ownProfileSection').style.display='none';
+      document.getElementById('otherProfileSection').style.display='block';
+      const gear = document.getElementById('openSettings'); if(gear) gear.style.display='none';
+      const back = document.getElementById('backToProfile'); if(back) back.style.display='none';
+      const settings = document.getElementById('settingsSection'); if(settings) settings.style.display='none';
+      const actions = document.getElementById('profileActions'); if(actions) actions.style.display='none';
+      const av = document.getElementById('otherProfileAvatar'); if(av){ const url = u.photoURL||''; av.style.backgroundImage = url ? `url("${url}")` : ''; }
+      const nm = document.getElementById('otherProfileName');
+      if(nm){
+        const handle = (u && u.handle) ? String(u.handle).trim() : '';
+        const display = handle ? `@${handle}` : (u.displayName || u.email || 'Friend');
+        nm.textContent = display;
+      }
+      openModal('profileModal');
+    }catch(e){ console.error(e); showToast('Could not load profile'); }
+  }
+  // Use event delegation for dynamic buttons
+  document.addEventListener('click', (e) => {
+    if(e.target.id === 'openSettings'){
+      try{
+        document.getElementById('profileModalTitle').textContent='Settings';
+        document.getElementById('ownProfileSection').style.display='none';
+        document.getElementById('otherProfileSection').style.display='none';
+        const settings = document.getElementById('settingsSection'); if(settings) settings.style.display='block';
+        const back = document.getElementById('backToProfile'); if(back) back.style.display='inline-flex';
+        const gear = document.getElementById('openSettings'); if(gear) gear.style.display='none';
+        const actions = document.getElementById('profileActions'); if(actions) actions.style.display='none';
+        
+        // Update settings profile avatar with current photo
+        const settingsProfileAvatar = document.getElementById('settingsProfileAvatar');
+        if(settingsProfileAvatar && currentUser) {
+          // Get current photo from user data
+          usersRef.doc(currentUser.uid).get().then(doc => {
+            if(doc.exists) {
+              const photoURL = doc.data().photoURL;
+              if(photoURL) {
+                settingsProfileAvatar.style.backgroundImage = `url("${photoURL}")`;
+                settingsProfileAvatar.style.backgroundSize = 'cover';
+                settingsProfileAvatar.style.backgroundPosition = 'center';
+                settingsProfileAvatar.style.backgroundRepeat = 'no-repeat';
+                settingsProfileAvatar.classList.add('custom-avatar');
+              } else {
+                settingsProfileAvatar.style.backgroundImage = '';
+                settingsProfileAvatar.classList.remove('custom-avatar');
+              }
+            }
+          }).catch(console.error);
+        }
+      }catch(_){ }
+    }
+    if(e.target.id === 'backToProfile') openOwnProfile();
+  });
+
+  if(saveHandle){
+    saveHandle.onclick = async ()=>{
+      try{
+        if(!currentUser) return showToast('Sign in first');
+        let raw = (handleInput && handleInput.value || '').trim();
+        if(!raw) return;
+        raw = raw.toLowerCase().replace(/[^a-z0-9_.]/g,'').slice(0,24);
+        if(!raw) return showToast('Invalid username');
+        // Check availability
+        const exists = await db.collection('handles').doc(raw).get();
+        if(exists.exists){ showToast('Name taken'); return; }
+        // Move previous handle if any
+        const uref = usersRef.doc(currentUser.uid); const ud = await uref.get(); const prev = ud.exists? (ud.data().handle||null) : null;
+        await db.runTransaction(async tx=>{
+          if(prev){ tx.delete(db.collection('handles').doc(prev)); }
+          tx.set(db.collection('handles').doc(raw), { uid: currentUser.uid, updatedAt: firebase.firestore.FieldValue.serverTimestamp() });
+          tx.set(uref, { handle: raw, handleLC: raw.toLowerCase() }, { merge:true });
+        });
+        await refreshAuthUI(currentUser);
+        showToast('Username updated');
+      }catch(e){ console.error(e); showToast('Update failed'); }
+    };
+  }
+
+  if(saveProfilePhoto){
+    saveProfilePhoto.onclick = async ()=>{
+      try{
+        if(!currentUser) return showToast('Sign in first');
+        // Deprecated path; handled by Change profile pic flow
+        showToast('Use "Change profile pic"');
+      }catch(e){ console.error(e); showToast('Photo update failed'); }
+    };
+  }
+
+  // Settings: Change profile pic with simple circle crop (zoom & pan)
+  let cropState = { startX:0, startY:0, imgX:0, imgY:0, dragging:false, scale:1, imgW:0, imgH:0 };
+  function openCropperWith(file){
+    try{
+      cropImage.style.visibility = 'hidden';
+      cropState = { startX:0,startY:0,imgX:0,imgY:0,dragging:false,scale:1,imgW:0,imgH:0 };
+      cropZoom.value = '1';
+      
+      // Try URL.createObjectURL first, fallback to FileReader
+      const loadImage = (src) => {
+        cropImage.src = src;
+        cropImage.onload = ()=>{
+          cropState.imgW = cropImage.naturalWidth; cropState.imgH = cropImage.naturalHeight;
+          renderCropTransform();
+          cropImage.style.visibility = 'visible';
+        };
+        cropImage.onerror = ()=>{
+          cropImage.style.visibility = 'visible';
+          showToast('Could not load image');
+        };
+      };
+      
+      try {
+        const objectUrl = URL.createObjectURL(file);
+        loadImage(objectUrl);
+        // Clean up after load
+        cropImage.onload = ()=>{
+          cropState.imgW = cropImage.naturalWidth; cropState.imgH = cropImage.naturalHeight;
+          renderCropTransform();
+          cropImage.style.visibility = 'visible';
+          URL.revokeObjectURL(objectUrl);
+        };
+      } catch(e) {
+        // Fallback to FileReader
+        const reader = new FileReader();
+        reader.onload = (e) => loadImage(e.target.result);
+        reader.readAsDataURL(file);
+      }
+      
+      openModal('cropModal');
+    }catch(e){ 
+      console.error('openCropperWith error:', e);
+      openModal('cropModal'); 
+    }
+  }
+  function renderCropTransform(){
+    cropImage.style.transform = `translate(calc(-50% + ${cropState.imgX}px), calc(-50% + ${cropState.imgY}px)) scale(${cropState.scale})`;
+  }
+  // Remove the onclick handler since we're using a label now
+  // The label will handle the file picker opening automatically
+  if(settingsImageInput){
+    settingsImageInput.onchange = ()=>{ const f=settingsImageInput.files&&settingsImageInput.files[0]; if(!f) return; if(f.size>10*1024*1024) return showToast('Image must be ≤ 10MB'); openCropperWith(f); };
+  }
+  if(closeCrop){ closeCrop.onclick = ()=> closeModal('cropModal'); }
+  if(cropZoom){ cropZoom.oninput = (e)=>{ cropState.scale = Number(e.target.value||'1'); renderCropTransform(); }; }
+  // Basic drag to pan
+  function addDrag(el){
+    el.addEventListener('pointerdown', (e)=>{ cropState.dragging=true; cropState.startX=e.clientX; cropState.startY=e.clientY; el.setPointerCapture(e.pointerId); });
+    el.addEventListener('pointermove', (e)=>{ if(!cropState.dragging) return; const dx=e.clientX-cropState.startX, dy=e.clientY-cropState.startY; cropState.imgX+=dx; cropState.imgY+=dy; cropState.startX=e.clientX; cropState.startY=e.clientY; renderCropTransform(); });
+    el.addEventListener('pointerup', ()=>{ cropState.dragging=false; });
+    el.addEventListener('pointercancel', ()=>{ cropState.dragging=false; });
+  }
+  if(cropImage){ addDrag(cropImage); }
+
+  if(saveCroppedAvatar){
+    saveCroppedAvatar.onclick = async ()=>{
+      try{
+        if(!currentUser) return showToast('Sign in first');
+        
+        // Check if image is loaded
+        if(!cropImage.complete || !cropImage.naturalWidth){
+          showToast('Image not loaded yet, please wait');
+          return;
+        }
+        
+        const frame = document.getElementById('cropFrame');
+        const size = Math.min(frame.clientWidth, frame.clientHeight);
+        const canvas = document.createElement('canvas'); 
+        canvas.width=size; 
+        canvas.height=size; 
+        const ctx=canvas.getContext('2d');
+        
+        if(!ctx){
+          showToast('Canvas not supported');
+          return;
+        }
+        
+        // Circle mask
+        ctx.beginPath(); 
+        ctx.arc(size/2,size/2,size/2,0,Math.PI*2); 
+        ctx.closePath(); 
+        ctx.clip();
+        
+        // Compute draw params: map from natural image to canvas considering transform
+        const scale = cropState.scale;
+        const drawW = cropState.imgW*scale; 
+        const drawH=cropState.imgH*scale;
+        const centerX = size/2 + cropState.imgX; 
+        const centerY = size/2 + cropState.imgY;
+        const dx = centerX - drawW/2; 
+        const dy = centerY - drawH/2;
+        
+        // Ensure image is fully loaded
+        await new Promise(r=>{ 
+          if(cropImage.complete && cropImage.naturalWidth > 0) r(); 
+          else cropImage.onload=r; 
+        });
+        
+        ctx.drawImage(cropImage, dx, dy, drawW, drawH);
+        
+        const blob = await new Promise((res,rej)=> { 
+          canvas.toBlob(res, 'image/jpeg', 0.9);
+          setTimeout(()=>rej(new Error('Canvas toBlob timeout')), 5000);
+        });
+        
+        if(!blob){
+          showToast('Failed to create image');
+          return;
+        }
+        
+        const file = new File([blob], 'avatar.jpg', { type:'image/jpeg' });
+        console.log('Uploading file:', file.size, 'bytes');
+        
+        const url = await uploadPingImage(file, currentUser.uid);
+        console.log('Uploaded to:', url);
+        
+        if(!url){
+          showToast('Failed to process image');
+          return;
+        }
+        
+        await usersRef.doc(currentUser.uid).set({ photoURL: url }, { merge:true });
+        console.log('Updated user doc');
+        
+        // Update UI - refresh all avatar elements immediately
+        const topRightAvatar = document.getElementById('profileAvatar'); // Top-right widget
+        const profileModalAvatar = document.getElementById('ownProfileAvatar'); // Profile modal
+        const settingsProfileAvatar = document.getElementById('settingsProfileAvatar');
+        
+        console.log('Avatar elements found:', { 
+          topRightAvatar: !!topRightAvatar, 
+          profileModalAvatar: !!profileModalAvatar,
+          settingsProfileAvatar: !!settingsProfileAvatar 
+        });
+        
+        const updateAvatar = (element, name) => {
+          if(element) {
+            // Only reset background-related styles, keep other styles
+            element.style.backgroundImage = `url("${url}")`;
+            element.style.backgroundSize = 'cover';
+            element.style.backgroundPosition = 'center';
+            element.style.backgroundRepeat = 'no-repeat';
+            
+            // Add custom-avatar class for CSS override
+            element.classList.add('custom-avatar');
+            element.style.setProperty('--custom-avatar-url', `url("${url}")`);
+            
+            console.log(`Updated ${name} with:`, url.substring(0, 50) + '...');
+            console.log(`Element computed style:`, window.getComputedStyle(element).backgroundImage);
+          } else {
+            console.log(`${name} not found!`);
+          }
+        };
+        
+        updateAvatar(topRightAvatar, 'topRightAvatar');
+        updateAvatar(profileModalAvatar, 'profileModalAvatar');
+        updateAvatar(settingsProfileAvatar, 'settingsProfileAvatar');
+        
+        // Update the user's photoURL in their profile data
+        await refreshAuthUI(currentUser);
+        
+        closeModal('cropModal');
+        showToast('Profile photo updated');
+        
+        // Force a UI refresh to ensure all avatars update
+        setTimeout(() => {
+          updateAvatar(topRightAvatar, 'topRightAvatar (delayed)');
+          updateAvatar(profileModalAvatar, 'profileModalAvatar (delayed)');
+          updateAvatar(settingsProfileAvatar, 'settingsProfileAvatar (delayed)');
+          
+          // Force refresh all avatar elements one more time
+          const allAvatars = [
+            { el: document.getElementById('profileAvatar'), name: 'topRightAvatar' },
+            { el: document.getElementById('ownProfileAvatar'), name: 'profileModalAvatar' },
+            { el: document.getElementById('settingsProfileAvatar'), name: 'settingsProfileAvatar' }
+          ];
+          
+          allAvatars.forEach(({ el, name }) => {
+            if(el) {
+              el.setAttribute('style', `background-image: url("${url}"); background-size: cover; background-position: center; background-repeat: no-repeat;`);
+              console.log(`Force updated ${name}`);
+            }
+          });
+        }, 200);
+      }catch(e){ 
+        console.error('Save avatar error:', e); 
+        showToast(`Could not save photo: ${e.message || 'Unknown error'}`); 
+      }
+    };
+  }
 
 
   async function refreshFriends(){
+    const friendList = document.getElementById('profileFriendsList');
+    const myCodeEl = document.getElementById('myCodeEl');
+    if(!friendList){ return; }
     if(!currentUser){ friendList.innerHTML='<div class="muted">Sign in to manage friends.</div>'; return; }
     const doc=await usersRef.doc(currentUser.uid).get(); const data=doc.exists? doc.data():{friendIds:[], isSubscriber:false};
-    myFriends=new Set(data.friendIds||[]); myCodeEl.value=currentUser.uid; isSubscriber = !!data.isSubscriber;
+    myFriends=new Set(data.friendIds||[]); if(myCodeEl) myCodeEl.value=currentUser.uid; isSubscriber = !!data.isSubscriber;
     friendList.innerHTML='';
     if(!myFriends.size){ friendList.innerHTML='<div class="muted">No friends yet. Share your code above.</div>'; reFilterMarkers(); return; }
     for(const fid of myFriends){
-      const fdoc=await usersRef.doc(fid).get(); const nm=fdoc.exists ? (fdoc.data().displayName||'Friend') : 'Friend';
-      const row=document.createElement('div'); row.className='friend-item';
-      row.innerHTML=`<div><strong>${nm}</strong><br/><small style="font-family:monospace">${fid}</small></div>`;
+      const fdoc=await usersRef.doc(fid).get();
+      const data=fdoc.exists ? fdoc.data() : {};
+      const handle = data && data.handle ? String(data.handle).trim() : '';
+      const displayName = handle ? `@${handle}` : (data.displayName || data.email || 'Friend');
+      const row=document.createElement('div'); row.className='friend-item'; row.setAttribute('tabindex','0'); row.style.cursor='pointer'; row.onclick=()=>openOtherProfile(fid); row.onkeydown=(e)=>{ if(e.key==='Enter'||e.key===' '){ e.preventDefault(); openOtherProfile(fid); } };
+      row.innerHTML=`<div><strong>${displayName}</strong><br/><small style="font-family:monospace">${fid}</small></div>`;
       const rm=document.createElement('button'); rm.className='btn'; rm.textContent='Remove';
-      rm.onclick=async()=>{ await usersRef.doc(currentUser.uid).set({ friendIds: firebase.firestore.FieldValue.arrayRemove(fid) },{merge:true}); await usersRef.doc(fid).set({ friendIds: firebase.firestore.FieldValue.arrayRemove(currentUser.uid) },{merge:true}); showToast('Removed'); refreshFriends(); };
+      rm.onclick=async(e)=>{ e.stopPropagation(); await usersRef.doc(currentUser.uid).set({ friendIds: firebase.firestore.FieldValue.arrayRemove(fid) },{merge:true}); await usersRef.doc(fid).set({ friendIds: firebase.firestore.FieldValue.arrayRemove(currentUser.uid) },{merge:true}); showToast('Removed'); refreshFriends(); };
       row.appendChild(rm); friendList.appendChild(row);
     }
     reFilterMarkers();
@@ -885,63 +1469,74 @@ $('#doGoogle').onclick = async () => {
   /* --------- Notifications --------- */
   const notifBadge=$('#notifBadge'), notifsModal=$('#notifsModal'), notifsContent=$('#notifsContent');
   $('#closeNotifs').onclick=()=>closeModal('notifsModal');
-  $('#bellBtn').onclick=async()=>{
-    if(!currentUser) return showToast('Sign in to view notifications');
-    openModal('notifsModal');
-    await usersRef.doc(currentUser.uid).set({ unreadCount: 0 }, { merge:true });
-    notifBadge.style.display='none';
-  };
+  // Use event delegation for notification button
+  document.addEventListener('click', async (e) => {
+    if(e.target.id === 'bellBtn' || e.target.closest('#bellBtn')){
+      e.stopPropagation(); // Prevent map click handler from firing
+      if(!currentUser) return showToast('Sign in to view notifications');
+      openModal('notifsModal');
+      await usersRef.doc(currentUser.uid).set({ unreadCount: 0 }, { merge:true });
+      notifBadge.style.display='none';
+    }
+  });
   let notifUnsub=null;
   function startNotifListener(uid){
     if(notifUnsub) notifUnsub();
     notifUnsub = usersRef.doc(uid).collection('notifications').orderBy('createdAt','desc').limit(50).onSnapshot(s=>{
       if(s.empty){ notifsContent.textContent='No notifications yet.'; return; }
       notifsContent.innerHTML='';
-      s.docChanges().forEach(ch=>{
-        if(ch.type==='added'){
-          const n=ch.doc.data();
-          const line=document.createElement('div');
-          if(n.type==='friend_req'){ 
-            line.className='notif req';
-            const from = n.from;
-            line.innerHTML = '<div class="notif-row"><div>Friend request</div><div class="notif-actions"><button class="btn" id="acc_'+ch.doc.id+'">✓</button><button class="btn" id="dec_'+ch.doc.id+'">✕</button></div></div>';
-            notifsContent.prepend(line);
-            setTimeout(()=>{
-              const acc = document.getElementById('acc_'+ch.doc.id); const dec = document.getElementById('dec_'+ch.doc.id);
-              if(acc) acc.onclick=()=>acceptFriendRequest(from+'_'+currentUser.uid).then(()=>closeModal('notifsModal')).catch(console.error);
-              if(dec) dec.onclick=()=>declineFriendRequest(from+'_'+currentUser.uid).catch(console.error);
-            });
-            if(!document.getElementById('notifsModal').classList.contains('open')){
-              notifBadge.style.display='inline-block';
-              notifBadge.textContent = String((Number(notifBadge.textContent||'0')||0)+1);
-              showToast('🔔 New friend request');
-            }
-          } else if(n.type==='friend_accept'){ 
-            line.textContent = 'Friend request accepted.';
-            notifsContent.prepend(line);
-            if(!document.getElementById('notifsModal').classList.contains('open')){
-              notifBadge.style.display='inline-block';
-              notifBadge.textContent = String((Number(notifBadge.textContent||'0')||0)+1);
-              showToast('✅ Friend accepted');
-            }
-          } else if(n.type==='potw_awarded'){ 
-            line.textContent = 'Your ping won Ping of the Week!';
-            notifsContent.prepend(line);
-            if(!document.getElementById('notifsModal').classList.contains('open')){
-              notifBadge.style.display='inline-block';
-              notifBadge.textContent = String((Number(notifBadge.textContent||'0')||0)+1);
-              showToast('🏆 Ping of the Week!');
-            }
-          } else if(n.type==='friend_ping'){
-            line.textContent = 'A friend just dropped a ping.';
-            notifsContent.prepend(line);
-            if(document.getElementById('notifsModal').classList.contains('open')===false){
-              notifBadge.style.display='inline-block';
-              const current = Number(notifBadge.textContent||'0') || 0;
-              notifBadge.textContent = String(current+1);
-              showToast('🔔 Friend pinged nearby');
-            }
+      s.forEach(doc=>{
+        const n=doc.data();
+        const line=document.createElement('div');
+        if(n.type==='friend_req'){ 
+          line.className='notif req';
+          const from = n.from;
+          const notifId = doc.id;
+          line.innerHTML = '<div class="notif-row"><div>Friend request</div><div class="notif-actions"><button class="btn" id="acc_'+notifId+'">✓</button><button class="btn" id="dec_'+notifId+'">✕</button></div></div>';
+          notifsContent.appendChild(line);
+          
+          // Bind events immediately after creating the element
+          const acc = document.getElementById('acc_'+notifId); 
+          const dec = document.getElementById('dec_'+notifId);
+          if(acc) {
+            acc.onclick = async ()=>{
+              try{
+                await acceptFriendRequest(from+'_'+currentUser.uid);
+                closeModal('notifsModal');
+                showToast('Friend request accepted');
+                // Remove the notification from UI
+                line.remove();
+              }catch(e){
+                console.error('Accept friend request error:', e);
+                showToast('Failed to accept request');
+              }
+            };
           }
+          if(dec) {
+            dec.onclick = async ()=>{
+              try{
+                await declineFriendRequest(from+'_'+currentUser.uid);
+                showToast('Friend request declined');
+                // Remove the notification from UI
+                line.remove();
+              }catch(e){
+                console.error('Decline friend request error:', e);
+                showToast('Failed to decline request');
+              }
+            };
+          }
+        } else if(n.type==='friend_accept'){ 
+          line.textContent = 'Friend request accepted.';
+          notifsContent.appendChild(line);
+        } else if(n.type==='potw_awarded'){ 
+          line.textContent = 'Your ping won Ping of the Week!';
+          notifsContent.appendChild(line);
+        } else if(n.type==='friend_ping'){
+          line.textContent = 'A friend just dropped a ping.';
+          notifsContent.appendChild(line);
+        } else if(n.type==='friend_removed'){
+          line.textContent = 'You were removed as a friend.';
+          notifsContent.appendChild(line);
         }
       });
     });
@@ -988,17 +1583,14 @@ $('#doGoogle').onclick = async () => {
 
     potwJump.onclick = ()=>{
       const ll = L.latLng(currentPotw.lat, currentPotw.lon);
-      if(map.getBounds().contains(ll)){
-        // already visible — pulse the marker once
-        const m = markers.get(currentPotw.id);
-        if(m && m._icon){
-          m._icon.classList.remove('potw-pulse');
-          // force reflow to restart animation
-          void m._icon.offsetWidth;
-          m._icon.classList.add('potw-pulse');
-        }
-      }else{
-        map.flyTo(ll, 17, { duration: 0.6, easeLinearity: 0.25 });
+      // Always fly to and zoom, regardless of visibility
+      map.flyTo(ll, 17, { duration: 0.6, easeLinearity: 0.25 });
+      // Pulse marker (if already rendered)
+      const m = markers.get(currentPotw.id);
+      if(m && m._icon){
+        m._icon.classList.remove('potw-pulse');
+        void m._icon.offsetWidth; // restart animation
+        m._icon.classList.add('potw-pulse');
       }
     };
   }
@@ -1116,7 +1708,7 @@ $('#doGoogle').onclick = async () => {
   let potwUnsub = null;
   function startPotwListener(){
     if(potwUnsub) potwUnsub();
-    const wStart = startOfWeekMontreal();
+    const wStart = startOfWeekMondayLocal();
     potwUnsub = pingsRef.where('createdAt','>=', wStart).orderBy('createdAt','desc').limit(1000).onSnapshot(s=>{
       s.docChanges().forEach(ch=>{
         const p = { id: ch.doc.id, ...ch.doc.data() };
@@ -1128,42 +1720,46 @@ $('#doGoogle').onclick = async () => {
   startPotwListener();
 
   /* --------- Auth state --------- */
-  /* --------- Auth state --------- */
+  auth.onAuthStateChanged(async (u)=>{
+    try{ await refreshAuthUI(u); }catch(e){ console.error('onAuthStateChanged', e); }
+    // Refresh live markers when auth changes to prevent stale filter states
+    try{ reFilterMarkers(); }catch(_){ }
+  });
+  auth.onIdTokenChanged(async (u)=>{
+    try{ await refreshAuthUI(u); }catch(e){ console.error('onIdTokenChanged', e); }
+  });
+  // Initial paint if already signed in from a previous session
+  try{ if(auth.currentUser){ await refreshAuthUI(auth.currentUser); } }catch(e){ }
 
-auth.onAuthStateChanged(async (u)=>{
-  currentUser=u;
-  if(u){
-    authBar.style.display='none'; userChip.style.display='inline-flex';
-    userChip.textContent = u.isAnonymous ? 'Guest' : (u.displayName || 'Signed in');
+  // Ultra-robust UI sync loop: ensure UI reflects auth state even if events are missed
+  (function startAuthUISync(){
+    let lastUid = null; let lastAnon = null;
+    setInterval(()=>{
+      try{
+        const u = auth.currentUser || null;
+        const uid = u ? u.uid : null; const isAnon = !!(u && u.isAnonymous);
+        const authBarVisible = false;
+        const chipVisible    = false;
 
-    enableColorZone();
+        const needsFlip = (
+          (u && authBarVisible) || (!u && chipVisible) ||
+          (uid !== lastUid) || (isAnon !== lastAnon)
+        );
 
-    if(!u.isAnonymous){
-      await usersRef.doc(u.uid).set({ displayName: u.displayName || 'Friend' }, { merge:true });
-      await refreshQuota(u.uid);
-      await refreshFriends();
-      startNotifListener(u.uid);
-      await ensureIdentityMappings(u);
-startRequestsListeners(u.uid);
-
-    }else{
-      $('#quotaText').textContent=`0/${MAX_PINGS_PER_DAY} pings today`;
-      await refreshFriends();
-    }
-  } else {
-    authBar.style.display='flex'; userChip.style.display='none';
-    myFriends=new Set(); if(notifUnsub) notifUnsub();
-    notifBadge.style.display='none';
-    disableColorZone();
-    $('#quotaText').textContent=`0/${MAX_PINGS_PER_DAY} pings today`;
-    reFilterMarkers();
-  }
-  recomputePotw().catch(console.error);
-});
+        if(needsFlip){ forceAuthUI(u); }
+        lastUid = uid; lastAnon = isAnon;
+      }catch(_){}
+    }, 400);
+  })();
 
 
   /* --------- Start PotW recompute cadence as safety --------- */
   setInterval(()=>{ recomputePotw().catch(console.error); }, 15*1000);
+
+  /* --------- Ensure buttons are enabled on load ---------- */
+  setTimeout(() => {
+    applyModalOpenClass();
+  }, 100);
 
   /* --------- Friends toggle initial ---------- */
   const toast = (m)=>showToast(m);
