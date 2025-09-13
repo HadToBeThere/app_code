@@ -155,6 +155,9 @@ textarea,input[type=text],input[type=password],input[type=email],input[type=file
 /* Remove button on attach preview */
 #attachPreview #removeAttachBtn{background:#fff;border:1px solid #e6e6e6;border-radius:999px;box-shadow:0 6px 18px rgba(0,0,0,.12)}
 
+/* Hotspot label */
+.hotspot-label{background:rgba(29,78,216,.12);color:#1d4ed8;border:1px solid rgba(29,78,216,.35);padding:2px 8px;font-weight:900;font-size:12px;border-radius:999px;backdrop-filter:blur(2px)}
+
 /* ---------- Ping-of-the-Week bottom card ---------- */
 .potw-card{
   position:fixed; left:50%; transform:translateX(-50%); bottom:84px;
