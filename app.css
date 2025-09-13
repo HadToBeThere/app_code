@@ -1,3 +1,5 @@
+/* removed clipWrap circular clip */
+/* removed circleMask */
 .icon-btn{width:40px;height:40px;display:inline-flex;align-items:center;justify-content:center;padding:0}
 :root{
   --brand:#d21f3c;  /* McGill-ish red */
@@ -21,8 +23,10 @@ html,body,#app{height:100%;margin:0;font-family:ui-rounded,system-ui,-apple-syst
     radial-gradient(1200px 1200px at 110% -10%, rgba(210,31,60,0.08) 0%, rgba(210,31,60,0) 45%),
     radial-gradient(1400px 1400px at -10% 110%, rgba(210,31,60,0.08) 0%, rgba(210,31,60,0) 45%),
     #fff;
-  transition:opacity .45s ease;
+  transition:opacity .45s ease; will-change:opacity, filter; backface-visibility:hidden;
 }
+/* removed splash-hole overlay */
+/* splash-earth removed per design change */
 .splash-wrap *{ pointer-events:auto }
 #app{ pointer-events:auto }
 /* Block background interactions while splash visible */
@@ -33,7 +37,8 @@ html,body,#app{height:100%;margin:0;font-family:ui-rounded,system-ui,-apple-syst
 .tagline{font-size:14px;color:var(--muted);margin-top:-6px}
 .logo-stack{display:flex;flex-direction:column;align-items:center;gap:22px}
 .logo-pin{filter:drop-shadow(0 8px 18px rgba(0,0,0,.18))}
-.logo-globe{background:transparent;border:none;padding:0;cursor:pointer;border-radius:999px;filter:drop-shadow(0 10px 22px rgba(0,0,0,.18));position:relative}
+.logo-globe{background:transparent;border:none;padding:0;cursor:pointer;border-radius:999px;filter:drop-shadow(0 10px 22px rgba(0,0,0,.18));position:relative;transition:transform 2.2s cubic-bezier(.2,.6,.2,1), opacity 1.6s ease, filter 2.2s ease;will-change:transform,opacity,filter;transform-origin:50% 50%}
+.start-label{transition:opacity .6s ease, transform .6s ease}
 .start-label{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);color:#0b1220;background:rgba(255,255,255,.92);padding:6px 12px;border-radius:999px;font-weight:900;font-size:12px;box-shadow:0 6px 16px rgba(0,0,0,.15)}
 .logo-globe:hover{transform:translateY(-1px) scale(1.02)}
 .splash-actions{display:flex;gap:10px;margin-top:6px;flex-wrap:wrap;justify-content:center}
@@ -41,6 +46,10 @@ html,body,#app{height:100%;margin:0;font-family:ui-rounded,system-ui,-apple-syst
 
 /* ---------- Map & mask ---------- */
 #map{height:100%;width:100%;position:relative;z-index:0;touch-action:pan-x pan-y pinch-zoom}
+/* Prestart map scale to sync with globe animation */
+#app.prestart-scale{transform:scale(.22);transform-origin:50% 45%;transition:transform 1.2s ease-in-out;will-change:transform;backface-visibility:hidden}
+#app.scale-in{transform:scale(1);transform-origin:50% 45%;transition:transform 1.2s ease-in-out;}
+/* removed clip-path reveal due to flashing */
 .leaflet-pane.inner-pane.gray-all{filter:grayscale(100%) brightness(0.6) saturate(0.30)!important}
 .desat-hole{
   display:none; /* enabled after auth/guest */
@@ -145,6 +154,7 @@ textarea,input[type=text],input[type=password],input[type=email],input[type=file
 .sheet{position:fixed;left:50%;transform:translateX(-50%);bottom:12px;width:min(720px,96vw);background:#fff;border:1px solid #eee;border-radius:16px;box-shadow:0 20px 60px rgba(0,0,0,.15);display:none;overflow:hidden;z-index:2050}
 .sheet.open{display:block}
 .sheet header{padding:12px 14px;border-bottom:1px solid #eee;display:flex;justify-content:space-between;align-items:center;gap:8px}
+.sheet .private-badge{margin-left:8px;display:inline-block;font-weight:900;font-size:11px;padding:2px 6px;border-radius:8px;background:#f3f4f6;color:#111;border:1px solid #e5e7eb}
 .sheet .text{padding:12px 14px;font-size:16px}
 .meta{color:var(--muted);font-size:12px;padding:0 14px 10px}
 .reactbar{display:flex;gap:8px;padding:8px 14px;border-top:1px solid #f2f2f2;border-bottom:1px solid #f2f2f2;flex-wrap:wrap}
