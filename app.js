@@ -2,8 +2,42 @@ window.addEventListener('load', async () => {
   /* --------- Splash --------- */
   const splash = document.getElementById('splash');
   const startGlobe = document.getElementById('startGlobe');
-  // Splash: block all interactions until PRESS START
-  startGlobe.addEventListener('click', () => { splash.style.opacity='0'; setTimeout(()=>splash.style.display='none',450); });
+  const appRoot = document.getElementById('app');
+  // Splash: animate earth mask to map, then hide
+  // Subtle scale/fade on the small globe, zoom the map behind, then fade splash
+  startGlobe.addEventListener('click', ()=>{
+    try{
+      // Remove container scaling; use native map zoom animation only
+      try{ if(appRoot){ appRoot.classList.remove('scale-in'); appRoot.classList.remove('prestart-scale'); } }catch(_){ }
+      // Instantly fade out the splash text/UI (keep globe slower)
+      ['.apptitle','.bigq','.tagline','.logo-pin'].forEach(sel=>{ try{ const el=document.querySelector(sel); if(el){ el.style.transition='opacity .25s ease, transform .25s ease'; el.style.opacity='0'; el.style.transform='translateY(-6px)'; } }catch(_){ } });
+      // Scale the globe strongly with a cinematic blur (kept)
+      startGlobe.style.transform='scale(18)';
+      startGlobe.style.filter='blur(6px)';
+      startGlobe.style.opacity='0.0';
+      const lbl=document.querySelector('.start-label'); if(lbl){ lbl.style.opacity='0'; lbl.style.transform='translateY(-6px)'; }
+      // Fade splash while globe scales
+      splash.style.transition='opacity 1.2s ease';
+      splash.style.opacity='0';
+      // Leaflet zoom animation in sync with globe (zoom OUT->IN)
+      try{
+        if(typeof map!=='undefined' && typeof FENCE_CENTER!=='undefined'){
+          const centerCandidate = (typeof userPos!== 'undefined' && userPos && userPos.distanceTo(FENCE_CENTER) <= RADIUS_M) ? userPos : FENCE_CENTER;
+          // Temporarily relax min zoom constraint so we can start wide
+          try{ if(typeof map.setMinZoom==='function'){ map.setMinZoom(0); } }catch(_){ }
+          // Ensure we start wide first, then zoom in to 16
+          try{ map.setZoom(12, {animate:false}); }catch(_){ }
+          map.flyTo(centerCandidate, 16, { animate:true, duration:1.2, easeLinearity:.25 });
+        }
+      }catch(_){ }
+    }catch(_){ }
+    // Fully remove splash after fade completes; minor settle pan/zoom after
+    setTimeout(()=>{
+      splash.style.display='none';
+      // Restore normal view constraints after the zoom
+      try{ updateViewConstraints(); }catch(_){ }
+    }, 1250);
+  });
 
   /* --------- Config --------- */
   const DEFAULT_CENTER = [45.5048, -73.5772];
@@ -247,11 +281,11 @@ startRequestsListeners(currentUser.uid);
   document.addEventListener('click', (e) => {
     if(e.target.id === 'profileWidget' || e.target.closest('#profileWidget')){
       e.stopPropagation(); // Prevent map click handler from firing
-      const u = auth.currentUser || null;
-      if(!u){ openModal('signInModal'); return; }
-      // Open modal immediately; load data after
-      try{ openModal('profileModal'); }catch(_){ }
-      openOwnProfile().catch((e)=>{ console.error('openOwnProfile failed', e); /* keep modal open even if data load fails */ });
+        const u = auth.currentUser || null;
+        if(!u){ openModal('signInModal'); return; }
+        // Open modal immediately; load data after
+        try{ openModal('profileModal'); }catch(_){ }
+        openOwnProfile().catch((e)=>{ console.error('openOwnProfile failed', e); /* keep modal open even if data load fails */ });
     }
   });
   const signInTopBtn = document.getElementById('signInTop');
@@ -360,7 +394,7 @@ startRequestsListeners(currentUser.uid);
   // Sign out can be added inside profile if needed
 
   /* --------- Map --------- */
-  const map = L.map('map',{ center:DEFAULT_CENTER, zoom:15, minZoom:0, maxZoom:22, zoomAnimation:true, markerZoomAnimation:true, fadeAnimation:true, zoomSnap:.5, wheelPxPerZoomLevel:45, wheelDebounceTime:40, scrollWheelZoom:true, doubleClickZoom:false, dragging:true, touchZoom:'center', zoomControl:false });
+  const map = L.map('map',{ center:DEFAULT_CENTER, zoom:12, minZoom:0, maxZoom:22, zoomAnimation:true, markerZoomAnimation:true, fadeAnimation:true, zoomSnap:.5, wheelPxPerZoomLevel:45, wheelDebounceTime:40, scrollWheelZoom:true, doubleClickZoom:false, dragging:true, touchZoom:'center', zoomControl:false });
   // Hotspot overlay pane (below markers, above inner overlay)
   const HOTSPOT_RADIUS_M = 100;
   const HOTSPOT_MIN_CENTER_SEP_M = 150;
@@ -386,7 +420,10 @@ startRequestsListeners(currentUser.uid);
 
   function hotspotEligible(p){
     const ts = p.createdAt?.toDate ? p.createdAt.toDate().getTime() : 0; if (!ts || Date.now()-ts > LIVE_WINDOW_MS) return false; // 24h
-    if(p.status==='hidden') return false; if(!inFence(p)) return false; return true;
+    if(p.status==='hidden') return false;
+    // Exclude private pings from global hotspot computation
+    if(p.visibility==='private') return false;
+    if(!inFence(p)) return false; return true;
   }
 
   function scheduleHotspotRecompute(){ if(hotspotTimer) clearTimeout(hotspotTimer); hotspotTimer=setTimeout(recomputeHotspot, 250); }
@@ -449,8 +486,11 @@ startRequestsListeners(currentUser.uid);
   if(navigator.geolocation){
     navigator.geolocation.getCurrentPosition(pos=>{
       userPos=L.latLng(pos.coords.latitude, pos.coords.longitude);
-      if(userPos.distanceTo(FENCE_CENTER)<=RADIUS_M){ map.setView(userPos, Math.max(map.getZoom(),16), {animate:false});
-        const latEl=$('#lat'),lonEl=$('#lon'); if(latEl&&lonEl){ latEl.value=userPos.lat.toFixed(6); lonEl.value=userPos.lng.toFixed(6); } }
+      if(userPos.distanceTo(FENCE_CENTER)<=RADIUS_M){
+        // Keep initial wide zoom; just center to user without changing zoom
+        map.panTo(userPos, {animate:false});
+        const latEl=$('#lat'),lonEl=$('#lon'); if(latEl&&lonEl){ latEl.value=userPos.lat.toFixed(6); lonEl.value=userPos.lng.toFixed(6); }
+      }
       updateViewConstraints(); enforceLock(); updateMask();
     },()=>{}, {enableHighAccuracy:true, maximumAge:15000, timeout:8000});
   }
@@ -520,12 +560,12 @@ startRequestsListeners(currentUser.uid);
     let r = radiusFromNet(n);
     // PotW appears as size of a ping with 2x its NET likes
     if(isPotw){
-      const twoN = n*2;
+      const fourN = n*4; // PotW size = size of a ping with 4x NET likes
       let potwR;
-      if(twoN <= L_LINEAR){
-        potwR = BASE_RADIUS + A_SLOPE * twoN;
+      if(fourN <= L_LINEAR){
+        potwR = BASE_RADIUS + A_SLOPE * fourN;
       }else{
-        potwR = BASE_RADIUS + A_SLOPE * L_LINEAR + B_SQRT * Math.sqrt(twoN - L_LINEAR);
+        potwR = BASE_RADIUS + A_SLOPE * L_LINEAR + B_SQRT * Math.sqrt(fourN - L_LINEAR);
       }
       r = Math.min(POTW_CAP, Math.max(MIN_RADIUS, potwR));
     }
@@ -585,6 +625,12 @@ startRequestsListeners(currentUser.uid);
     if (!ts || Date.now()-ts > LIVE_WINDOW_MS) return false;
     if(!inFence(p)) return false;
     if(p.status==='hidden') return false;
+    // Respect visibility: private pings are visible to author and friends only
+    if(p.visibility==='private'){
+      if(isMine(p)) return true;
+      if(isFriend(p)) return true;
+      return false;
+    }
     if(filterMode==='me') return isMine(p);
     if(filterMode==='friends') return isMine(p) || isFriend(p);
     return true;
@@ -740,6 +786,8 @@ startRequestsListeners(currentUser.uid);
     }catch(_){ }
   };
   $('#cancelCreate').onclick=()=>{ try{ const prev=document.getElementById('attachPreview'); const lbl=document.getElementById('attachLabel'); if(prev) prev.style.display='none'; if(lbl) lbl.style.display='inline-flex'; if(attachInput) attachInput.value=''; }catch(_){ } closeModal('createModal'); };
+  // Visibility toggle element
+  const pingVisibility = document.getElementById('pingVisibility');
   if(attachInput){
     attachInput.onchange = ()=>{
       try{
@@ -774,9 +822,9 @@ startRequestsListeners(currentUser.uid);
       const udoc = await getUserDoc(currentUser.uid) || {};
       const lastAt = udoc.lastPingAt?.toDate ? udoc.lastPingAt.toDate().getTime() : 0;
       if(!isUnlimited()){
-        if(Date.now()-lastAt < MIN_MILLIS_BETWEEN_PINGS) return showToast('Slow down—try again in a few minutes');
-        const used=await refreshQuota(currentUser.uid);
-        if(used>=MAX_PINGS_PER_DAY) return showToast('Daily limit reached');
+      if(Date.now()-lastAt < MIN_MILLIS_BETWEEN_PINGS) return showToast('Slow down—try again in a few minutes');
+      const used=await refreshQuota(currentUser.uid);
+      if(used>=MAX_PINGS_PER_DAY) return showToast('Daily limit reached');
       } else {
         await refreshQuota(currentUser.uid);
       }
@@ -795,18 +843,20 @@ startRequestsListeners(currentUser.uid);
         imageUrl = await uploadPingImage(file, currentUser.uid);
       }
 
+      const visibility = (pingVisibility && pingVisibility.value==='private') ? 'private' : 'public';
       const ref = await pingsRef.add({
         text, lat, lon,
         createdAt: firebase.firestore.FieldValue.serverTimestamp(),
         authorId: currentUser.uid,
         authorIsSubscriber: !!isSubscriber,
         likes:0, dislikes:0, flags:0, status:'live',
+        visibility,
         imageUrl: imageUrl || null,
         firstNetAt: {} // milestones map (N -> timestamp) starts empty
       });
       await usersRef.doc(currentUser.uid).set({ lastPingAt: firebase.firestore.FieldValue.serverTimestamp() }, { merge:true });
 
-      const temp = { id:ref.id, text, lat, lon, createdAt:{toDate:()=>new Date()}, authorId:currentUser.uid, authorIsSubscriber:!!isSubscriber, likes:0, dislikes:0, flags:0, status:'live', imageUrl, firstNetAt:{} };
+      const temp = { id:ref.id, text, lat, lon, createdAt:{toDate:()=>new Date()}, authorId:currentUser.uid, authorIsSubscriber:!!isSubscriber, likes:0, dislikes:0, flags:0, status:'live', visibility, imageUrl, firstNetAt:{} };
       lastPingCache.set(ref.id,temp); upsertMarker(temp);
 
       closeModal('createModal'); $('#pingText').value=''; $('#lat').value=''; $('#lon').value=''; attachInput.value='';
@@ -830,6 +880,7 @@ startRequestsListeners(currentUser.uid);
       if(!doc.exists){ sheet.classList.remove('open'); return; }
       const p={id:doc.id, ...doc.data()}; lastPingCache.set(p.id,p);
       sheetText.textContent=p.text; const created = p.createdAt?.toDate ? p.createdAt.toDate().getTime() : null; sheetMeta.textContent=`Near ${Number(p.lat).toFixed(5)}, ${Number(p.lon).toFixed(5)} • ${timeAgo(created)}`;
+      try{ const titleEl=document.getElementById('pingSheetTitle'); if(titleEl){ titleEl.innerHTML = p.visibility==='private' ? 'Ping <span class="private-badge">Private</span>' : 'Ping'; } }catch(_){ }
       if(p.imageUrl){
         // Do not show image by default; show a View button that only opens lightbox
         sheetImgEl.src=p.imageUrl;
@@ -1238,14 +1289,14 @@ startRequestsListeners(currentUser.uid);
   // Use event delegation for dynamic buttons
   document.addEventListener('click', (e) => {
     if(e.target.id === 'openSettings'){
-      try{
-        document.getElementById('profileModalTitle').textContent='Settings';
-        document.getElementById('ownProfileSection').style.display='none';
-        document.getElementById('otherProfileSection').style.display='none';
-        const settings = document.getElementById('settingsSection'); if(settings) settings.style.display='block';
-        const back = document.getElementById('backToProfile'); if(back) back.style.display='inline-flex';
-        const gear = document.getElementById('openSettings'); if(gear) gear.style.display='none';
-        const actions = document.getElementById('profileActions'); if(actions) actions.style.display='none';
+    try{
+      document.getElementById('profileModalTitle').textContent='Settings';
+      document.getElementById('ownProfileSection').style.display='none';
+      document.getElementById('otherProfileSection').style.display='none';
+      const settings = document.getElementById('settingsSection'); if(settings) settings.style.display='block';
+      const back = document.getElementById('backToProfile'); if(back) back.style.display='inline-flex';
+      const gear = document.getElementById('openSettings'); if(gear) gear.style.display='none';
+      const actions = document.getElementById('profileActions'); if(actions) actions.style.display='none';
         
         // Update settings profile avatar with current photo
         const settingsProfileAvatar = document.getElementById('settingsProfileAvatar');
@@ -1267,7 +1318,7 @@ startRequestsListeners(currentUser.uid);
             }
           }).catch(console.error);
         }
-      }catch(_){ }
+    }catch(_){ }
     }
     if(e.target.id === 'backToProfile') openOwnProfile();
   });
@@ -1311,14 +1362,14 @@ startRequestsListeners(currentUser.uid);
   function openCropperWith(file){
     try{
       cropImage.style.visibility = 'hidden';
-      cropState = { startX:0,startY:0,imgX:0,imgY:0,dragging:false,scale:1,imgW:0,imgH:0 };
-      cropZoom.value = '1';
+    cropState = { startX:0,startY:0,imgX:0,imgY:0,dragging:false,scale:1,imgW:0,imgH:0 };
+    cropZoom.value = '1';
       
       // Try URL.createObjectURL first, fallback to FileReader
       const loadImage = (src) => {
         cropImage.src = src;
-        cropImage.onload = ()=>{
-          cropState.imgW = cropImage.naturalWidth; cropState.imgH = cropImage.naturalHeight;
+    cropImage.onload = ()=>{
+      cropState.imgW = cropImage.naturalWidth; cropState.imgH = cropImage.naturalHeight;
           renderCropTransform();
           cropImage.style.visibility = 'visible';
         };
@@ -1348,7 +1399,7 @@ startRequestsListeners(currentUser.uid);
       openModal('cropModal');
     }catch(e){ 
       console.error('openCropperWith error:', e);
-      openModal('cropModal'); 
+    openModal('cropModal');
     }
   }
   function renderCropTransform(){
@@ -1538,10 +1589,10 @@ startRequestsListeners(currentUser.uid);
   document.addEventListener('click', async (e) => {
     if(e.target.id === 'bellBtn' || e.target.closest('#bellBtn')){
       e.stopPropagation(); // Prevent map click handler from firing
-      if(!currentUser) return showToast('Sign in to view notifications');
-      openModal('notifsModal');
-      await usersRef.doc(currentUser.uid).set({ unreadCount: 0 }, { merge:true });
-      notifBadge.style.display='none';
+    if(!currentUser) return showToast('Sign in to view notifications');
+    openModal('notifsModal');
+    await usersRef.doc(currentUser.uid).set({ unreadCount: 0 }, { merge:true });
+    notifBadge.style.display='none';
     }
   });
   let notifUnsub=null;
@@ -1552,10 +1603,10 @@ startRequestsListeners(currentUser.uid);
       notifsContent.innerHTML='';
       s.forEach(doc=>{
         const n=doc.data();
-        const line=document.createElement('div');
-        if(n.type==='friend_req'){ 
-          line.className='notif req';
-          const from = n.from;
+          const line=document.createElement('div');
+          if(n.type==='friend_req'){ 
+            line.className='notif req';
+            const from = n.from;
           const notifId = doc.id;
           line.innerHTML = '<div class="notif-row"><div>Friend request</div><div class="notif-actions"><button class="btn" id="acc_'+notifId+'">✓</button><button class="btn" id="dec_'+notifId+'">✕</button></div></div>';
           notifsContent.appendChild(line);
@@ -1589,18 +1640,18 @@ startRequestsListeners(currentUser.uid);
                 showToast('Failed to decline request');
               }
             };
-          }
-        } else if(n.type==='friend_accept'){ 
-          line.textContent = 'Friend request accepted.';
+            }
+          } else if(n.type==='friend_accept'){ 
+            line.textContent = 'Friend request accepted.';
           notifsContent.appendChild(line);
-        } else if(n.type==='potw_awarded'){ 
-          line.textContent = 'Your ping won Ping of the Week!';
+          } else if(n.type==='potw_awarded'){ 
+            line.textContent = 'Your ping won Ping of the Week!';
           notifsContent.appendChild(line);
-        } else if(n.type==='friend_ping'){
-          line.textContent = 'A friend just dropped a ping.';
+          } else if(n.type==='friend_ping'){
+            line.textContent = 'A friend just dropped a ping.';
           notifsContent.appendChild(line);
-        } else if(n.type==='friend_removed'){
-          line.textContent = 'You were removed as a friend.';
+          } else if(n.type==='friend_removed'){
+            line.textContent = 'You were removed as a friend.';
           notifsContent.appendChild(line);
         }
       });
