@@ -48,7 +48,7 @@
     </div>
   </div>
 
-  <div id="app">
+  <div id="app" class="prestart-scale">
     <div id="map"><div class="desat-hole"></div></div>
 
     <!-- Left sidebar (Filters only) -->
@@ -132,6 +132,13 @@
           </div>
         </header>
         <div class="content">
+          <div class="row" style="gap:.5rem; align-items:center; margin-bottom:6px">
+            <label class="btn" for="pingVisibility">Visibility</label>
+            <select id="pingVisibility" class="btn" style="min-width:140px">
+              <option value="public" selected>Public</option>
+              <option value="private">Private (friends only)</option>
+            </select>
+          </div>
           <div class="row"><input id="pingText" type="text" maxlength="140" placeholder="What’s happening?" /></div>
           <div class="row" style="gap:.5rem; align-items:center">
             <label class="btn" id="attachLabel" for="pingImage">Attach Image</label>
@@ -169,7 +176,7 @@
     <!-- Ping Sheet (details) -->
     <div class="sheet" id="pingSheet" role="dialog" aria-modal="true">
       <header>
-        <div style="font-weight:900">Ping</div>
+        <div style="font-weight:900" id="pingSheetTitle">Ping</div>
         <div style="display:flex; gap:8px">
           <select id="reportReason" class="btn">
             <option value="">Report…</option>
