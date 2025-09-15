@@ -74,13 +74,210 @@ window.addEventListener('load', async () => {
   const auth = firebase.auth();
   const db   = firebase.firestore();
   // Ensure session persists across reloads
-  try{ await auth.setPersistence(firebase.auth.Auth.Persistence.NONE); }catch(e){ console.warn('persistence', e); }
+  // Persist session across reloads without changing splash behavior
+  try{ await auth.setPersistence(firebase.auth.Auth.Persistence.LOCAL); }catch(e){ console.warn('persistence', e); }
 
   /* --------- Helpers --------- */
   const $ = s=>document.querySelector(s);
   const $$ = s=>document.querySelectorAll(s);
   const toastEl = $('#toast');
   const showToast=(msg)=>{ toastEl.textContent=msg; toastEl.classList.add('show'); setTimeout(()=>toastEl.classList.remove('show'),6000); };
+  function montrealNow(){ try{ return new Date(new Date().toLocaleString('en-US', { timeZone: TZ })); }catch(_){ return new Date(); } }
+  function dateKey(d){ const y=d.getFullYear(); const m=String(d.getMonth()+1).padStart(2,'0'); const day=String(d.getDate()).padStart(2,'0'); return `${y}-${m}-${day}`; }
+
+  // Reverse geocoding (OSM Nominatim) with simple localStorage cache
+  const GEOCODE_CACHE_KEY = 'htbt_geocode_cache_v1';
+  let geocodeCache = {};
+  try{ const raw=localStorage.getItem(GEOCODE_CACHE_KEY); if(raw) geocodeCache=JSON.parse(raw)||{}; }catch(_){ geocodeCache={}; }
+  function saveGeocodeCache(){ try{ localStorage.setItem(GEOCODE_CACHE_KEY, JSON.stringify(geocodeCache)); }catch(_){ } }
+  function geokey(lat, lon){ return `${lat.toFixed(4)},${lon.toFixed(4)}`; }
+  function pickArea(addr){ return addr.neighbourhood||addr.suburb||addr.city_district||addr.borough||addr.village||addr.town||addr.city||addr.county||''; }
+  function formatPlace(addr){
+    try{
+      const road = addr.road || addr.pedestrian || addr.residential || addr.footway || addr.path || addr.cycleway || '';
+      const area = pickArea(addr);
+      if(road && area) return `${road}, ${area}`;
+      if(area) return `${area}`;
+      const disp = addr.display_name || '';
+      if(disp) return disp.split(',').slice(0,3).join(', ').trim();
+    }catch(_){ }
+    return '';
+  }
+  async function reverseGeocode(lat, lon){
+    const key = geokey(lat, lon);
+    const cached = geocodeCache[key];
+    const now = Date.now();
+    if(cached && (now - (cached.ts||0) < 14*24*3600*1000) && cached.label){ return cached.label; }
+    try{
+      const url = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${encodeURIComponent(lat)}&lon=${encodeURIComponent(lon)}&zoom=17&addressdetails=1&accept-language=en`;
+      const res = await fetch(url, { headers:{ 'Accept':'application/json' } });
+      if(!res.ok) throw new Error('geocode http');
+      const j = await res.json();
+      const addr = j && (j.address||{});
+      const label = formatPlace(addr) || (j.display_name ? String(j.display_name).split(',').slice(0,3).join(', ').trim() : '');
+      if(label){ geocodeCache[key] = { label, ts: now }; saveGeocodeCache(); return label; }
+    }catch(_){ }
+    return '';
+  }
+
+  // ---------- Mentions helpers ----------
+  const uidHandleCache = new Map();
+  async function getHandleForUid(uid){
+    if(!uid) return null; if(uidHandleCache.has(uid)) return uidHandleCache.get(uid);
+    try{ const d=await usersRef.doc(uid).get(); const u=d.exists? d.data():null; const h=u&&u.handle? String(u.handle).trim():''; const display = h? `@${h}` : (u && (u.displayName||u.email) || 'Friend'); uidHandleCache.set(uid, display); return display; }catch(_){ return null; }
+  }
+
+  const HANDLE_RE = /(^|[^a-z0-9_.])@([a-z0-9_.]{2,24})\b/i;
+  function extractSingleMention(text){
+    if(!text) return { kind:'none' };
+    const m = text.match(HANDLE_RE);
+    if(!m) return { kind:'none' };
+    const handle = m[2];
+    if(handle.toLowerCase()==='friends') return { kind:'friends', start: m.index + m[1].length, end: (m.index + m[0].length), raw:`@${m[2]}` };
+    // Ensure there isn't a second @handle
+    const rest = text.slice((m.index||0) + m[0].length);
+    if(HANDLE_RE.test(rest)) return { kind:'invalid_multi' };
+    return { kind:'handle', handleLC: handle.toLowerCase(), start: m.index + m[1].length, end: (m.index + m[0].length), raw:`@${m[2]}` };
+  }
+
+  async function resolveHandleToUid(handleLC){
+    try{ const doc = await db.collection('handles').doc(handleLC).get(); return doc.exists ? (doc.data().uid||null) : null; }catch(_){ return null; }
+  }
+
+  async function incMentionQuotaOrFail(senderUid){
+    try{
+      const day = dateKey(montrealNow());
+      const id = `mention_quota_${senderUid}_${day}`;
+      let ok = false;
+      await db.runTransaction(async (tx)=>{
+        const ref = db.collection('meta').doc(id);
+        const snap = await tx.get(ref);
+        const count = snap.exists ? Number(snap.data().count||0) : 0;
+        if(count >= 20){ ok=false; return; }
+        tx.set(ref, { count: count+1, updatedAt: firebase.firestore.FieldValue.serverTimestamp() }, { merge:true });
+        ok = true;
+      });
+      return ok;
+    }catch(_){ return false; }
+  }
+
+  async function notifyMention(recipientUid, payload){
+    try{
+      if(!recipientUid) return;
+      const dedupeId = payload.kind+ '_' + payload.key;
+      await db.runTransaction(async (tx)=>{
+        const nref = usersRef.doc(recipientUid).collection('notifications').doc(dedupeId);
+        const ns = await tx.get(nref);
+        if(ns.exists) return;
+        tx.set(nref, { type:'mention', from: payload.from, pingId: payload.pingId||null, commentId: payload.commentId||null, createdAt: firebase.firestore.FieldValue.serverTimestamp() });
+      });
+    }catch(_){ }
+  }
+
+  function renderTextWithMentions(container, text, mentions){
+    try{
+      container.textContent='';
+      if(!text){ return; }
+      const parts = [];
+      if(!Array.isArray(mentions) || mentions.length===0){ container.textContent = text; return; }
+      // assume at most one mention; still robust for many
+      let idx=0;
+      const sorted = [...mentions].sort((a,b)=> (Number(a.start||0)) - (Number(b.start||0)));
+      for(const m of sorted){
+        const s = Number(m.start||0), e = Number(m.end||s);
+        if(s>idx){ parts.push({ kind:'text', text: text.slice(idx,s) }); }
+        parts.push({ kind:'mention', uid: m.uid, raw: text.slice(s,e) });
+        idx = e;
+      }
+      if(idx < text.length){ parts.push({ kind:'text', text: text.slice(idx) }); }
+      const frag = document.createDocumentFragment();
+      let pendingResolves = [];
+      for(const p of parts){
+        if(p.kind==='text'){ frag.appendChild(document.createTextNode(p.text)); }
+        else if(p.kind==='mention'){ const span=document.createElement('button'); span.className='btn'; span.style.padding='0 6px'; span.style.borderRadius='8px'; span.style.margin='0 2px'; span.style.fontWeight='800'; span.title='Open profile'; span.setAttribute('data-uid', p.uid||''); span.onclick=()=>{ if(p.uid) openOtherProfile(p.uid); }; span.textContent=p.raw||'@user'; frag.appendChild(span); pendingResolves.push({ el:span, uid:p.uid }); }
+      }
+      container.appendChild(frag);
+      // Resolve display labels
+      pendingResolves.forEach(async ({el,uid})=>{ const disp=await getHandleForUid(uid); if(disp){ el.textContent = disp; } });
+    }catch(e){ try{ container.textContent = text; }catch(_){ } }
+  }
+  // Points (PPs) helpers
+  async function awardPoints(uid, delta, reason){
+    if(!uid || !Number.isFinite(delta) || delta===0) return;
+    try{
+      await db.runTransaction(async (tx)=>{
+        const uref = usersRef.doc(uid);
+        const usnap = await tx.get(uref);
+        const prev = usnap.exists ? Number(usnap.data().points||0) : 0;
+        const next = Math.max(0, prev + delta);
+        tx.set(uref, { points: next }, { merge:true });
+      });
+    }catch(e){ console.warn('awardPoints failed', reason||'', e); }
+  }
+
+  // Once-per-day login award (+2 PPs), signed-in users only
+  async function maybeAwardDailyLogin(uid){
+    try{
+      const todayKey = dateKey(montrealNow());
+      await db.runTransaction(async (tx)=>{
+        const ref = usersRef.doc(uid);
+        const snap = await tx.get(ref);
+        const last = snap.exists ? (snap.data().lastLoginDay || '') : '';
+        if(last === todayKey) return; // already awarded
+        const prev = snap.exists ? Number(snap.data().points||0) : 0;
+        const next = Math.max(0, prev + 2);
+        tx.set(ref, { points: next, lastLoginDay: todayKey }, { merge:true });
+      });
+    }catch(e){ console.warn('daily login award failed', e); }
+  }
+
+  // On first ping of the day: update ping streak and award floor(streak/2), cap 25; toast
+  async function awardOnFirstPingOfDay(uid){
+    try{
+      const today = montrealNow();
+      const todayKey = dateKey(today);
+      const yesterday = new Date(today.getTime() - ONE_DAY);
+      const yesterdayKey = dateKey(yesterday);
+      await db.runTransaction(async (tx)=>{
+        const ref = usersRef.doc(uid);
+        const snap = await tx.get(ref);
+        const data = snap.exists ? snap.data() : {};
+        const lastPingDay = data.lastPingDay || '';
+        let streak = Number(data.streakDays||0);
+        let firstPingToday = false;
+        if(lastPingDay === todayKey){
+          // already pinged today: no streak change, no streak award
+        }else if(lastPingDay === yesterdayKey){
+          streak = Math.max(1, streak + 1);
+          firstPingToday = true;
+        }else{
+          streak = 1; // reset
+          firstPingToday = true;
+        }
+        // Always update lastPingDay on any ping
+        const update = { lastPingDay: todayKey, streakDays: streak };
+        // Streak award only once on first ping of the day
+        if(firstPingToday){
+          const alreadyAwardedDay = data.lastStreakAwardDay || '';
+          if(alreadyAwardedDay !== todayKey){
+            const bonus = Math.min(25, Math.floor(streak/2));
+            const prevPts = Number(data.points||0);
+            const nextPts = Math.max(0, prevPts + bonus);
+            update.points = nextPts;
+            update.lastStreakAwardDay = todayKey;
+            // Toast after transaction commits (outside)
+            tx.set(ref, update, { merge:true });
+            throw { __postCommitToast: `🔥 +${bonus} PPs — streak ${streak} days` };
+          }
+        }
+        tx.set(ref, update, { merge:true });
+      });
+    }catch(e){
+      if(e && e.__postCommitToast){ showToast(e.__postCommitToast); return; }
+      if(e && e.message && String(e.message).includes('__postCommitToast')){ return; }
+      // normal errors
+    }
+  }
   function isUnlimited(){
     try{
       const e = (auth.currentUser && auth.currentUser.email || '').toLowerCase();
@@ -200,6 +397,7 @@ async function refreshAuthUI(user){
       if(w) w.style.display = 'flex';
       if(signInTop) signInTop.style.display = 'none';
       enableColorZone();
+      try{ await maybeAwardDailyLogin(currentUser.uid); }catch(_){ }
     }else{
       if(nm) nm.textContent = 'Sign in';
       if(av){ av.style.backgroundImage=''; }
@@ -258,16 +456,50 @@ startRequestsListeners(currentUser.uid);
   }
 
 
-  // Week start (Monday 00:00) robust to TZ issues
+  // Week start (Monday 00:00) in Montreal time
   function startOfWeekMondayLocal(now = new Date()){
-    const local = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
-    const dow = local.getDay(); // 0=Sun,1=Mon,...
-    const daysFromMon = (dow === 0 ? 6 : dow - 1);
-    return new Date(local.getTime() - daysFromMon * ONE_DAY);
+    try{
+      // Represent "now" in Montreal local time
+      const tzNow = new Date(now.toLocaleString('en-US', { timeZone: TZ }));
+      const midnight = new Date(tzNow.getFullYear(), tzNow.getMonth(), tzNow.getDate(), 0, 0, 0, 0);
+      const dow = tzNow.getDay(); // 0=Sun,1=Mon,... in Montreal
+      const daysFromMon = (dow === 0 ? 6 : dow - 1);
+      const tzMonday = new Date(midnight.getTime() - daysFromMon * ONE_DAY);
+      // Convert back to real epoch by removing the same offset we added via toLocaleString
+      const offset = tzNow.getTime() - now.getTime();
+      return new Date(tzMonday.getTime() - offset);
+    }catch(_){
+      // Fallback to local timezone Monday if TZ logic fails
+      const local = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
+      const dow = local.getDay();
+      const daysFromMon = (dow === 0 ? 6 : dow - 1);
+      return new Date(local.getTime() - daysFromMon * ONE_DAY);
+    }
   }
   function isThisWeek(ts){
     const wStart = startOfWeekMondayLocal();
     return ts >= wStart.getTime();
+  }
+
+  function endOfCurrentWeekLocal(){
+    const start = startOfWeekMondayLocal();
+    return new Date(start.getTime() + 7*ONE_DAY);
+  }
+
+  function potwEndsInText(){
+    try{
+      const end = endOfCurrentWeekLocal().getTime();
+      const now = Date.now();
+      const diff = Math.max(0, end - now);
+      const hours = Math.floor(diff / (3600*1000));
+      const days = Math.floor(hours / 24);
+      const remH = hours % 24;
+      if(days > 0) return `Ends in ${days}d ${remH}h`;
+      const mins = Math.floor((diff % (3600*1000)) / (60*1000));
+      if(hours > 0) return `Ends in ${hours}h ${mins}m`;
+      const secs = Math.floor((diff % (60*1000)) / 1000);
+      return `Ends in ${mins}m ${secs}s`;
+    }catch(_){ return ''; }
   }
 
   /* --------- Auth UI --------- */
@@ -335,7 +567,11 @@ startRequestsListeners(currentUser.uid);
           friendIds: [], lastPingAt: null, unreadCount: 0, isSubscriber:false
         }, { merge:true });
       }else{
-        await usersRef.doc(user.uid).set({ displayName: user.displayName || 'Friend' }, { merge:true });
+        // Do not overwrite custom profile fields on re-login except to backfill missing displayName
+        try{
+          const uref = usersRef.doc(user.uid); const snap = await uref.get();
+          if(!snap.exists || !snap.data().displayName){ await uref.set({ displayName: user.displayName || 'Friend' }, { merge:true }); }
+        }catch(_){ }
         await ensureIdentityMappings(user);
       }
       try{ document.getElementById('signInModal').classList.remove('open'); }catch{}
@@ -573,7 +809,11 @@ startRequestsListeners(currentUser.uid);
 
     const style = colorForPing(p);
     let inner;
-    if(style.kind==='subM' && !myFriends.has(p.authorId) && !(currentUser && p.authorId===currentUser.uid)){
+    if(isPotw){
+      // PotW marker is always gold, regardless of author relationship
+      const {html,size,anchor}=balloonSVG('#d4af37',px);
+      inner = L.divIcon({className:'pin-icon', html, iconSize:size, iconAnchor:anchor});
+    }else if(style.kind==='subM' && !myFriends.has(p.authorId) && !(currentUser && p.authorId===currentUser.uid)){
       inner = mIcon(px);
     }else{
       const {html,size,anchor}=balloonSVG(style.color,px);
@@ -624,7 +864,7 @@ startRequestsListeners(currentUser.uid);
     const ts = p.createdAt?.toDate ? p.createdAt.toDate().getTime() : 0;
     if (!ts || Date.now()-ts > LIVE_WINDOW_MS) return false;
     if(!inFence(p)) return false;
-    if(p.status==='hidden') return false;
+    if(p.status==='hidden' || p.status==='deleted') return false;
     // Respect visibility: private pings are visible to author and friends only
     if(p.visibility==='private'){
       if(isMine(p)) return true;
@@ -742,11 +982,38 @@ startRequestsListeners(currentUser.uid);
     }
   }
 
+  // Video upload (Firebase Storage)
+  async function uploadPingVideo(file, uid){
+    // Local development fallback: return an object URL so posting works without Storage
+    try{
+      if(location.hostname === 'localhost' || location.hostname === '127.0.0.1'){
+        try{ console.log('Local development detected, using object URL for video'); }catch(_){ }
+        return URL.createObjectURL(file);
+      }
+      const storage = firebase.storage();
+      const extGuess = (file && file.name && file.name.includes('.')) ? file.name.split('.').pop().toLowerCase() : 'mp4';
+      const ext = (extGuess || 'mp4').replace(/[^a-z0-9]/g,'').slice(0,5) || 'mp4';
+      const path = `pings/${uid}/vid_${Date.now()}_${Math.random().toString(36).slice(2,8)}.${ext}`;
+      const ref = storage.ref().child(path);
+      const metadata = {
+        contentType: file.type || 'video/mp4',
+        cacheControl: 'public, max-age=31536000'
+      };
+      const snap = await ref.put(file, metadata);
+      const url = await snap.ref.getDownloadURL();
+      return url;
+    }catch(e){ console.error('uploadPingVideo', e); throw e; }
+  }
+
   /* --------- Create ping --------- */
-  const attachInput = $('#pingImage');
+  const attachInput = document.getElementById('pingMedia');
+  const pingTextInput = document.getElementById('pingText');
+  const mentionSuggest = document.getElementById('mentionSuggest');
   const subscribeBtn = $('#subscribeBtn');
   const attachPreview = document.getElementById('attachPreview');
   const attachPreviewImg = document.getElementById('attachPreviewImg');
+  const attachVideoPreview = document.getElementById('attachVideoPreview');
+  const attachPreviewVid = document.getElementById('attachPreviewVid');
 
   subscribeBtn.onclick = ()=>{
     if(!currentUser || currentUser.isAnonymous) return showToast('Sign in to subscribe');
@@ -772,34 +1039,39 @@ startRequestsListeners(currentUser.uid);
     openModal('createModal');
     // Disable attach for non-subscribers
     try{
-      const lbl = document.getElementById('attachLabel');
+      const lbl = document.getElementById('attachMediaLabel');
       if(attachInput) attachInput.disabled = !isSubscriber;
-      if(lbl){
-        if(!isSubscriber){ lbl.classList.add('muted'); lbl.style.pointerEvents='none'; lbl.title='Subscribe to attach images'; }
-        else { lbl.classList.remove('muted'); lbl.style.pointerEvents='auto'; lbl.title='Attach Image'; }
-      }
+      if(lbl){ if(!isSubscriber){ lbl.classList.add('muted'); lbl.style.pointerEvents='none'; lbl.title='Subscribe to attach media'; } else { lbl.classList.remove('muted'); lbl.style.pointerEvents='auto'; lbl.title='Attach Media'; } }
       // Reset preview and show attach label on open
       const prev = document.getElementById('attachPreview');
       if(prev) prev.style.display = 'none';
       if(lbl) lbl.style.display = 'inline-flex';
       if(attachInput) attachInput.value = '';
+      if(attachVideoPreview) attachVideoPreview.style.display = 'none';
     }catch(_){ }
   };
-  $('#cancelCreate').onclick=()=>{ try{ const prev=document.getElementById('attachPreview'); const lbl=document.getElementById('attachLabel'); if(prev) prev.style.display='none'; if(lbl) lbl.style.display='inline-flex'; if(attachInput) attachInput.value=''; }catch(_){ } closeModal('createModal'); };
+  $('#cancelCreate').onclick=()=>{ try{ const prev=document.getElementById('attachPreview'); const lbl=document.getElementById('attachMediaLabel'); if(prev) prev.style.display='none'; if(lbl) lbl.style.display='inline-flex'; if(attachInput) attachInput.value=''; const vp=document.getElementById('attachVideoPreview'); if(vp) vp.style.display='none'; if(attachPreviewVid){ attachPreviewVid.pause(); attachPreviewVid.src=''; } }catch(_){ } closeModal('createModal'); };
   // Visibility toggle element
   const pingVisibility = document.getElementById('pingVisibility');
   if(attachInput){
     attachInput.onchange = ()=>{
       try{
         const f = attachInput.files && attachInput.files[0];
-        if(f){
+        if(!f){ if(attachPreview) attachPreview.style.display='none'; if(attachVideoPreview) attachVideoPreview.style.display='none'; const lbl=document.getElementById('attachMediaLabel'); if(lbl) lbl.style.display='inline-flex'; return; }
+        const isVideo = (f.type||'').startsWith('video/');
+        const isImage = (f.type||'').startsWith('image/');
+        const lbl = document.getElementById('attachMediaLabel'); if(lbl) lbl.style.display='none';
+        if(isImage){
           const url = URL.createObjectURL(f);
-          if(attachPreviewImg) attachPreviewImg.src = url;
-          if(attachPreview) attachPreview.style.display = 'block';
-          const lbl = document.getElementById('attachLabel'); if(lbl) lbl.style.display = 'none';
-        } else {
-          if(attachPreview) attachPreview.style.display = 'none';
-          const lbl = document.getElementById('attachLabel'); if(lbl) lbl.style.display = 'inline-flex';
+          if(attachPreviewVid){ attachPreviewVid.pause(); attachPreviewVid.src=''; }
+          if(attachVideoPreview) attachVideoPreview.style.display='none';
+          if(attachPreviewImg) attachPreviewImg.src=url;
+          if(attachPreview) attachPreview.style.display='block';
+        } else if(isVideo){
+          const url = URL.createObjectURL(f);
+          if(attachPreviewImg) attachPreviewImg.src=''; if(attachPreview) attachPreview.style.display='none';
+          if(attachPreviewVid) attachPreviewVid.src=url;
+          if(attachVideoPreview) attachVideoPreview.style.display='block';
         }
       }catch(_){ }
     };
@@ -835,15 +1107,36 @@ startRequestsListeners(currentUser.uid);
       if(Number.isNaN(lat)||Number.isNaN(lon)){ const base=(userPos && userPos.distanceTo(FENCE_CENTER)<=RADIUS_M)? userPos : FENCE_CENTER; lat=base.lat; lon=base.lng; }
       if(L.latLng(lat,lon).distanceTo(FENCE_CENTER)>RADIUS_M) return showToast('Outside the circle');
 
-      let imageUrl = null;
-      const file = attachInput.files && attachInput.files[0];
-      if(file){
-        if(!isSubscriber){ return showToast('Subscribe to attach images'); }
-        if(file.size > 10*1024*1024) return showToast('Image must be ≤ 10MB');
-        imageUrl = await uploadPingImage(file, currentUser.uid);
+      let imageUrl = null, videoUrl = null;
+      const mediaFile = attachInput && attachInput.files && attachInput.files[0];
+      if(mediaFile){
+        if(!isSubscriber) return showToast('Subscribe to attach media');
+        const isVideo = (mediaFile.type||'').startsWith('video/');
+        const isImage = (mediaFile.type||'').startsWith('image/');
+        if(isImage){
+          if(mediaFile.size > 10*1024*1024) return showToast('Image must be ≤ 10MB');
+          imageUrl = await uploadPingImage(mediaFile, currentUser.uid);
+        } else if(isVideo){
+          if(mediaFile.size > 50*1024*1024) return showToast('Video must be ≤ 50MB');
+          videoUrl = await uploadPingVideo(mediaFile, currentUser.uid);
+        }
       }
 
       const visibility = (pingVisibility && pingVisibility.value==='private') ? 'private' : 'public';
+      // Mentions: parse up to 10 handles; @friends counts as 1
+      let storedMentions = [];
+      try{
+        const parsed = parseMentionsFromText(text);
+        const { finalRanges, targetUids } = await buildMentionTargets({ text, ranges: parsed.ranges, handles: parsed.handles, hasFriends: parsed.hasFriends, pingDoc: { authorId: currentUser.uid }, visibility });
+        storedMentions = finalRanges; // for rendering stability
+        // Send notifications (respect daily cap and dedupe)
+        await sendMentionNotifications('mention_ping', 'temp', null, targetUids); // temp pingId replaced below after add
+      }catch(err){
+        const msg = String(err&&err.message||err||'').toLowerCase();
+        if(msg.startsWith('invalid:')) return showToast('No such user');
+        if(msg.includes('too_many')) return showToast('Max 10 mentions');
+      }
+
       const ref = await pingsRef.add({
         text, lat, lon,
         createdAt: firebase.firestore.FieldValue.serverTimestamp(),
@@ -852,15 +1145,29 @@ startRequestsListeners(currentUser.uid);
         likes:0, dislikes:0, flags:0, status:'live',
         visibility,
         imageUrl: imageUrl || null,
-        firstNetAt: {} // milestones map (N -> timestamp) starts empty
+        firstNetAt: {}, // milestones map (N -> timestamp) starts empty
+        mentions: storedMentions,
+        videoUrl: videoUrl || null
       });
+      // Award ping PPs and possibly streak bonus (first ping of day)
+      try{
+        await awardPoints(currentUser.uid, 5, 'ping');
+        await awardOnFirstPingOfDay(currentUser.uid);
+      }catch(_){ }
       await usersRef.doc(currentUser.uid).set({ lastPingAt: firebase.firestore.FieldValue.serverTimestamp() }, { merge:true });
 
-      const temp = { id:ref.id, text, lat, lon, createdAt:{toDate:()=>new Date()}, authorId:currentUser.uid, authorIsSubscriber:!!isSubscriber, likes:0, dislikes:0, flags:0, status:'live', visibility, imageUrl, firstNetAt:{} };
+      const temp = { id:ref.id, text, lat, lon, createdAt:{toDate:()=>new Date()}, authorId:currentUser.uid, authorIsSubscriber:!!isSubscriber, likes:0, dislikes:0, flags:0, status:'live', visibility, imageUrl, videoUrl, firstNetAt:{} };
       lastPingCache.set(ref.id,temp); upsertMarker(temp);
 
-      closeModal('createModal'); $('#pingText').value=''; $('#lat').value=''; $('#lon').value=''; attachInput.value='';
+      closeModal('createModal'); $('#pingText').value=''; $('#lat').value=''; $('#lon').value=''; if(attachInput) attachInput.value='';
       await refreshQuota(currentUser.uid);
+      // Mentions notifications (now that we have real pingId)
+      try{
+        if(storedMentions && storedMentions.length){ const targets = storedMentions.map(m=>m.uid).filter(Boolean); await sendMentionNotifications('mention_ping', ref.id, null, targets); }
+        else {
+          const parsed = parseMentionsFromText(text); if(parsed.hasFriends && myFriends){ const list = Array.from(myFriends); await sendMentionNotifications('mention_ping', ref.id, null, list); }
+        }
+      }catch(_){ }
       showToast('Ping posted');
     }catch(e){ console.error(e); showToast((e.code||'error')+': '+(e.message||'Error posting')); }
   };
@@ -868,7 +1175,13 @@ startRequestsListeners(currentUser.uid);
   /* --------- Sheet / votes / comments / reports --------- */
   const sheet=$('#pingSheet'), sheetText=$('#sheetText'), sheetMeta=$('#sheetMeta');
   const sheetImage=$('#sheetImage'), sheetImgEl=$('#sheetImgEl');
-  const viewImageBtn=$('#viewImageBtn');
+  const sheetVideo=$('#sheetVideo'), sheetVidEl=$('#sheetVidEl');
+  const viewMediaBtn=$('#viewMediaBtn');
+  const authorRow=document.getElementById('authorRow');
+  const authorAvatar=document.getElementById('authorAvatar');
+  const authorNameLine=document.getElementById('authorNameLine');
+  const authorStatsLine=document.getElementById('authorStatsLine');
+  const authorAddFriendBtn=document.getElementById('authorAddFriendBtn');
   const reactBar=$('#reactBar'), commentsEl=$('#comments'), commentInput=$('#commentInput');
   let openId=null, openUnsub=null, openCommentsUnsub=null;
 
@@ -879,25 +1192,124 @@ startRequestsListeners(currentUser.uid);
     openUnsub = pingsRef.doc(id).onSnapshot(doc=>{
       if(!doc.exists){ sheet.classList.remove('open'); return; }
       const p={id:doc.id, ...doc.data()}; lastPingCache.set(p.id,p);
-      sheetText.textContent=p.text; const created = p.createdAt?.toDate ? p.createdAt.toDate().getTime() : null; sheetMeta.textContent=`Near ${Number(p.lat).toFixed(5)}, ${Number(p.lon).toFixed(5)} • ${timeAgo(created)}`;
+      // Populate author row (visible to everyone for public; private limited by shouldShow)
+      (async ()=>{
+        try{
+          const uid = p.authorId;
+          const you = currentUser && uid===currentUser.uid;
+          const uDoc = await usersRef.doc(uid).get();
+          const u = uDoc.exists ? uDoc.data() : {};
+          const handle = (u && u.handle) ? String(u.handle).trim() : '';
+          const displayBase = handle ? `@${handle}` : (u.displayName || u.email || 'Friend');
+          const name = you ? 'You' : displayBase;
+          const pts = Number(u.points||0);
+          const streak = Number(u.streakDays||0);
+          const isSub = !!u.isSubscriber;
+          if(authorNameLine){ authorNameLine.innerHTML = isSub ? `${name} <span title="Subscriber" style="margin-left:6px;font-weight:900;color:#c01631;background:#fff;border:1px solid #e6e6e6;padding:0 6px;border-radius:999px">M</span>` : name; }
+          if(authorStatsLine){ authorStatsLine.textContent = `${pts} PPs • 🔥 ${streak}`; }
+          if(authorAvatar){ if(u.photoURL){ authorAvatar.style.backgroundImage=`url("${u.photoURL}")`; authorAvatar.classList.add('custom-avatar'); } else { authorAvatar.style.backgroundImage=''; authorAvatar.classList.remove('custom-avatar'); } }
+          if(authorRow){ authorRow.onclick = ()=> openOtherProfile(uid); }
+          // Friend CTA inline
+          try{
+            if(authorAddFriendBtn){
+              const isFriend = myFriends && myFriends.has && myFriends.has(uid);
+              if(!you && !isFriend){ authorAddFriendBtn.style.display='inline-flex'; authorAddFriendBtn.onclick = async (e)=>{ e.stopPropagation(); try{ if(!currentUser) return showToast('Sign in first'); await sendFriendRequest(currentUser.uid, uid); authorAddFriendBtn.style.display='none'; showToast('Friend request sent'); }catch(err){ console.error(err); showToast('Could not send request'); } }; }
+              else { authorAddFriendBtn.style.display='none'; authorAddFriendBtn.onclick=null; }
+            }
+          }catch(_){ }
+          // Lightbox bylines
+          try{ const imgBy=document.getElementById('imageByline'); if(imgBy){ imgBy.textContent = `by ${displayBase}`; } }catch(_){ }
+          try{ const vidBy=document.getElementById('videoByline'); if(vidBy){ vidBy.textContent = `by ${displayBase}`; } }catch(_){ }
+        }catch(e){ console.warn('author row', e); }
+      })();
+      // Render ping text with mentions if present
+      try{
+        if(Array.isArray(p.mentions) && p.mentions.length){ renderTextWithMentions(sheetText, String(p.text||''), p.mentions); }
+        else { sheetText.textContent = p.text; }
+      }catch(_){ sheetText.textContent = p.text; }
+      const created = p.createdAt?.toDate ? p.createdAt.toDate().getTime() : null;
+      // Build meta: place label • distance (if available) • time ago
+      (async ()=>{
+        const parts=[];
+        try{
+          const label = await reverseGeocode(Number(p.lat), Number(p.lon));
+          if(label) parts.push(label); else parts.push('Nearby');
+        }catch(_){ parts.push('Nearby'); }
+        try{
+          if(userPos){
+            const d=L.latLng(p.lat,p.lon).distanceTo(userPos);
+            const distTxt = (d<1000) ? `${Math.round(d)} m away` : `${(d/1000).toFixed(1)} km away`;
+            parts.push(distTxt);
+          }
+        }catch(_){ }
+        parts.push(timeAgo(created));
+        sheetMeta.textContent = parts.join(' • ');
+      })();
       try{ const titleEl=document.getElementById('pingSheetTitle'); if(titleEl){ titleEl.innerHTML = p.visibility==='private' ? 'Ping <span class="private-badge">Private</span>' : 'Ping'; } }catch(_){ }
-      if(p.imageUrl){
-        // Do not show image by default; show a View button that only opens lightbox
-        sheetImgEl.src=p.imageUrl;
-        sheetImage.style.display='none';
-        if(viewImageBtn){ viewImageBtn.style.display='inline-flex'; viewImageBtn.onclick=()=>{ if(sheetImgEl && sheetImgEl.src){ const lb=document.getElementById('lightboxImg'); if(lb){ lb.src=sheetImgEl.src; openModal('imageLightbox'); } } } }
-      } else {
-        sheetImage.style.display='none';
-        if(viewImageBtn){ viewImageBtn.style.display='none'; viewImageBtn.onclick=null; }
+      // Media handling: hide inline; show a single View button and set byline
+      let hasMedia=false; let mediaType=null;
+      if(p.imageUrl){ sheetImgEl.src=p.imageUrl; sheetImage.style.display='none'; hasMedia=true; mediaType='image'; }
+      else { sheetImage.style.display='none'; }
+      if(p.videoUrl){ if(sheetVidEl) sheetVidEl.src=p.videoUrl; if(sheetVideo) sheetVideo.style.display='none'; hasMedia=true; mediaType= mediaType || 'video'; }
+      else { if(sheetVideo) sheetVideo.style.display='none'; }
+      if(viewMediaBtn){
+        if(hasMedia){
+          viewMediaBtn.style.display='inline-flex';
+          viewMediaBtn.onclick=()=>{
+            if(p.videoUrl){ const vl=document.getElementById('lightboxVideo'); if(vl){ try{ vl.pause(); }catch(_){ } vl.removeAttribute('src'); vl.load(); vl.src=p.videoUrl; try{ vl.currentTime=0; }catch(_){ } setTimeout(()=>{ try{ vl.play(); }catch(_){ } }, 50); openModal('videoLightbox'); } return; }
+            if(p.imageUrl){ const lb=document.getElementById('lightboxImg'); if(lb){ lb.src=p.imageUrl; openModal('imageLightbox'); } }
+          };
+        } else { viewMediaBtn.style.display='none'; viewMediaBtn.onclick=null; }
       }
+      // Toggle Delete button visibility if author
+      try{
+        const delBtn=document.getElementById('deletePingBtn');
+        if(delBtn){
+          const mine = (currentUser && p.authorId===currentUser.uid);
+          delBtn.style.display = mine ? 'inline-flex' : 'none';
+          if(mine){
+            delBtn.onclick = async ()=>{
+              try{
+                if(!confirm('Delete this ping?')) return;
+                await pingsRef.doc(p.id).set({ status:'deleted', deletedAt: firebase.firestore.FieldValue.serverTimestamp() }, { merge:true });
+                showToast('Ping deleted');
+                sheet.classList.remove('open'); applyModalOpenClass();
+              }catch(e){ console.error(e); showToast('Delete failed'); }
+            };
+          } else {
+            delBtn.onclick = null;
+          }
+        }
+      }catch(_){ }
+
       renderVoteBar(p); upsertMarker(p);
     });
 
     openCommentsUnsub = pingsRef.doc(id).collection('comments').orderBy('createdAt','desc').limit(200).onSnapshot(s=>{
       commentsEl.innerHTML=''; s.forEach(d=>{
         const c=d.data(); const when=c.createdAt||null;
-        const div=document.createElement('div'); div.className='comment'; div.innerHTML=`${c.text}<br/><small>${timeAgo(when)}</small>`; commentsEl.appendChild(div);
+        const div=document.createElement('div'); div.className='comment';
+        const textSpan=document.createElement('span');
+        // Render mentions if present
+        if(Array.isArray(c.mentions) && c.mentions.length){ renderTextWithMentions(textSpan, String(c.text||''), c.mentions); }
+        else { textSpan.textContent=String(c.text||''); }
+        const br=document.createElement('br');
+        const small=document.createElement('small'); small.textContent=timeAgo(when);
+        div.appendChild(textSpan); div.appendChild(br); div.appendChild(small);
+        // Delete for own comment
+        try{
+          if(currentUser && c.authorId===currentUser.uid){
+            const del=document.createElement('button'); del.className='btn'; del.textContent='Delete'; del.style.marginLeft='8px';
+            del.onclick = async ()=>{
+              try{ await pingsRef.doc(openId).collection('comments').doc(d.id).delete(); showToast('Comment deleted'); }
+              catch(e){ console.error(e); showToast('Delete failed'); }
+            };
+            div.appendChild(del);
+          }
+        }catch(_){ }
+        commentsEl.appendChild(div);
       });
+      try{ commentsEl.scrollTo({ top: 0, behavior: 'smooth' }); }catch(_){ }
     });
   }
   $('#closeSheet').onclick=()=>{ sheet.classList.remove('open'); if(openUnsub) openUnsub(); if(openCommentsUnsub) openCommentsUnsub(); openId=null; applyModalOpenClass(); };
@@ -908,25 +1320,39 @@ startRequestsListeners(currentUser.uid);
     document.getElementById('closeLightbox').onclick = ()=> closeModal('imageLightbox');
   }catch(_){ }
 
+  // Video lightbox behavior
+  try{
+    const closeV = document.getElementById('closeVideoLightbox');
+    if(closeV){ closeV.onclick = ()=>{ try{ const vl=document.getElementById('lightboxVideo'); if(vl){ vl.pause(); vl.removeAttribute('src'); vl.load(); } }catch(_){ } closeModal('videoLightbox'); }; }
+  }catch(_){ }
+
   // Remove attached image in create modal
   try{
     const removeAttachBtn = document.getElementById('removeAttachBtn');
-    if(removeAttachBtn){
-      removeAttachBtn.onclick = ()=>{
-        try{
-          if(attachPreviewImg) attachPreviewImg.src='';
-          if(attachPreview) attachPreview.style.display='none';
-          const lbl = document.getElementById('attachLabel'); if(lbl) lbl.style.display='inline-flex';
-          if(attachInput) attachInput.value='';
-        }catch(_){ }
-      };
-    }
+    const removeVideoBtn = document.getElementById('removeVideoBtn');
+    const clearAll = ()=>{
+      try{
+        if(attachPreviewImg) attachPreviewImg.src=''; if(attachPreview) attachPreview.style.display='none';
+        if(attachPreviewVid){ attachPreviewVid.pause(); attachPreviewVid.src=''; }
+        if(attachVideoPreview) attachVideoPreview.style.display='none';
+        const lbl = document.getElementById('attachMediaLabel'); if(lbl) lbl.style.display='inline-flex';
+        if(attachInput) attachInput.value='';
+      }catch(_){ }
+    };
+    if(removeAttachBtn){ removeAttachBtn.onclick = clearAll; }
+    if(removeVideoBtn){ removeVideoBtn.onclick = clearAll; }
   }catch(_){ }
 
   function renderVoteBar(p){
     reactBar.innerHTML='';
     const disabled = (!currentUser || currentUser.isAnonymous);
-    const mk=(type,label,count)=>{ const b=document.createElement('button'); b.className='react'; b.textContent=`${label} ${count||0}`; if(disabled){ b.disabled=true; b.style.opacity=.6; b.title='Sign in to react'; } else { b.onclick=()=>setVote(p.id,type).catch(console.error); } return b; };
+    const mk=(type,label,count)=>{
+      const b=document.createElement('button'); b.className='react';
+      const n = Number(count)||0; b.textContent = n>0 ? `${label} ${n}` : label;
+      if(disabled){ b.disabled=true; b.style.opacity=.6; b.title='Sign in to react'; }
+      else { b.onclick=()=>setVote(p.id,type).catch(console.error); }
+      return b;
+    };
     reactBar.appendChild(mk('like','👍',p.likes)); reactBar.appendChild(mk('dislike','👎',p.dislikes));
   }
 
@@ -935,6 +1361,7 @@ startRequestsListeners(currentUser.uid);
     if(!currentUser) return showToast('Sign in first');
     if(currentUser.isAnonymous) return showToast('Guests can’t react');
     const vid=`${pingId}_${currentUser.uid}`;
+    let awardResult=null;
     await db.runTransaction(async tx=>{
       const pRef=pingsRef.doc(pingId), vRef=votesRef.doc(vid);
       const [pSnap,vSnap]=await Promise.all([tx.get(pRef), tx.get(vRef)]);
@@ -971,16 +1398,59 @@ startRequestsListeners(currentUser.uid);
       updates.likes = p.likes||0; updates.dislikes = p.dislikes||0;
 
       tx.update(pRef, updates);
+      // Compute milestone crossings for PP awards (up) and penalties (down)
+      const beforeMil = Math.floor(beforeNet/3);
+      const afterMil  = Math.floor(afterNet/3);
+      const up   = Math.max(0, afterMil - beforeMil);
+      const down = Math.max(0, beforeMil - afterMil);
+      awardResult = { authorId: p.authorId || pSnap.data().authorId || null, up, down };
     }).catch(e=>console.error(e));
+    // Apply PP delta based on milestone crossings
+    try{
+      if(awardResult && awardResult.authorId){
+        const delta = (awardResult.up||0) - (awardResult.down||0);
+        if(delta!==0){ await awardPoints(awardResult.authorId, delta, 'like_milestones'); }
+      }
+    }catch(_){ }
   }
 
   $('#sendComment').onclick=async()=>{
     if(!openId) return; if(!currentUser) return showToast('Sign in first');
     if(currentUser.isAnonymous) return showToast('Guests can’t comment');
     const t=(commentInput.value||'').trim(); if(!t) return; if(/\b[A-Z][a-z]+\s+[A-Z][a-z]+\b/.test(t)) return showToast('No real names');
-    await pingsRef.doc(openId).collection('comments').add({ text:t, authorId:currentUser.uid, createdAt:firebase.firestore.FieldValue.serverTimestamp()});
+    // Mentions in comments
+    let storedMentions = [];
+    try{
+      // Load ping to know visibility and author/friends
+      const pingSnap = await pingsRef.doc(openId).get();
+      const pingDoc = pingSnap.exists ? pingSnap.data() : null;
+      const vis = pingDoc && pingDoc.visibility || 'public';
+      const parsed = parseMentionsFromText(t);
+      const { finalRanges, targetUids } = await buildMentionTargets({ text:t, ranges:parsed.ranges, handles:parsed.handles, hasFriends:parsed.hasFriends, pingDoc, visibility: vis });
+      storedMentions = finalRanges;
+      // Save comment with mentions
+      await pingsRef.doc(openId).collection('comments').doc(currentUser.uid).set({ text:t, authorId:currentUser.uid, createdAt:firebase.firestore.FieldValue.serverTimestamp(), mentions: storedMentions });
+      // Send notifications
+      await sendMentionNotifications('mention_comment', openId, currentUser.uid, targetUids);
+    }catch(err){
+      const msg = String(err&&err.message||err||'').toLowerCase();
+      if(msg.startsWith('invalid:')) return showToast('No such user');
+      if(msg.includes('too_many')) return showToast('Max 10 mentions');
+      // Fallback: save comment without mentions
+      await pingsRef.doc(openId).collection('comments').doc(currentUser.uid).set({ text:t, authorId:currentUser.uid, createdAt:firebase.firestore.FieldValue.serverTimestamp()});
+    }
     commentInput.value='';
+    try{ commentsEl.scrollTo({ top: 0, behavior: 'smooth' }); }catch(_){ }
   };
+
+  // Enter to send, Shift+Enter for newline
+  try{
+    if(commentInput){
+      commentInput.addEventListener('keydown', (e)=>{
+        if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); const btn=document.getElementById('sendComment'); if(btn) btn.click(); }
+      });
+    }
+  }catch(_){ }
 
   // Reporting: 1 per user per ping; hide at 3
   $('#reportReason').onchange=async(e)=>{
@@ -1029,6 +1499,179 @@ startRequestsListeners(currentUser.uid);
     return null;
   }
 
+  // ---- Mentions helpers ----
+  const mentionHandleRegex = /(^|[^a-z0-9_.])@([a-z0-9_.]+)/ig;
+  const mentionsCache = new Map(); // uid -> { handle, photoURL }
+  async function resolveUidByHandle(handleLC){
+    try{ const doc = await db.collection('handles').doc(handleLC).get(); return doc.exists ? (doc.data().uid||null) : null; }catch(_){ return null; }
+  }
+  async function getUserBasics(uid){
+    if(!uid) return { handle:null, photoURL:null, displayName:'Friend' };
+    if(mentionsCache.has(uid)) return mentionsCache.get(uid);
+    try{
+      const d = await usersRef.doc(uid).get();
+      const handle = d.exists ? (d.data().handle||null) : null;
+      const photoURL = d.exists ? (d.data().photoURL||null) : null;
+      const displayName = d.exists ? (d.data().displayName||'Friend') : 'Friend';
+      const out = { handle, photoURL, displayName };
+      mentionsCache.set(uid, out);
+      return out;
+    }catch(_){ return { handle:null, photoURL:null, displayName:'Friend' }; }
+  }
+  function parseMentionsFromText(text){
+    const handles = [];
+    const ranges = [];
+    if(!text) return { handles, ranges, hasFriends:false };
+    let m; mentionHandleRegex.lastIndex = 0;
+    const lower = String(text);
+    while((m = mentionHandleRegex.exec(lower))){
+      const full = m[0], prefix = m[1]||'', handle = m[2]||'';
+      const start = m.index + prefix.length;
+      const end = start + 1 + handle.length;
+      if(handle.toLowerCase()==='friends') continue; // handle separately
+      handles.push(handle.toLowerCase());
+      ranges.push({ start, end, handleLC: handle.toLowerCase() });
+      if(handles.length >= 30) break; // safety
+    }
+    const hasFriends = /(^|[^a-z0-9_.])@friends(?![a-z0-9_.])/i.test(lower);
+    return { handles, ranges, hasFriends };
+  }
+
+  // Mention suggestions (handles + @friends)
+  function hideMentionSuggest(){ if(mentionSuggest){ mentionSuggest.style.display='none'; mentionSuggest.innerHTML=''; } }
+  function showMentionSuggest(items, anchorEl){
+    if(!mentionSuggest || !anchorEl) return; if(!items || !items.length){ hideMentionSuggest(); return; }
+    const rect = anchorEl.getBoundingClientRect();
+    mentionSuggest.innerHTML='';
+    items.forEach(it=>{
+      const row=document.createElement('div'); row.className='mi';
+      const av=document.createElement('div'); av.className='av'; if(it.photoURL){ av.style.backgroundImage=`url("${it.photoURL}")`; av.style.backgroundSize='cover'; av.style.border='1px solid #e6e6e6'; }
+      const nm=document.createElement('div'); nm.className='nm'; nm.textContent = it.label;
+      row.appendChild(av); row.appendChild(nm);
+      row.onclick = ()=>{ try{
+        const el = pingTextInput; if(!el) return; const val = el.value; const at = val.lastIndexOf('@'); if(at>=0){ el.value = val.slice(0,at) + it.insert + ' '; el.focus(); const ev=new Event('input'); el.dispatchEvent(ev); } hideMentionSuggest(); }catch(_){ }
+      };
+      mentionSuggest.appendChild(row);
+    });
+    mentionSuggest.style.left = Math.max(8, rect.left) + 'px';
+    mentionSuggest.style.top  = (rect.bottom + 6) + 'px';
+    mentionSuggest.style.display='block';
+  }
+
+  async function buildMentionCandidates(prefixLC){
+    const list=[];
+    // @friends option when matches prefix
+    if('friends'.startsWith(prefixLC)) list.push({ label:'@friends', insert:'@friends', photoURL:'' });
+    // friends handles
+    try{
+      const ids = myFriends ? Array.from(myFriends).slice(0,50) : [];
+      const snaps = await Promise.all(ids.map(id=> usersRef.doc(id).get().catch(()=>null)));
+      snaps.forEach(d=>{
+        if(d && d.exists){ const u=d.data(); const h=u && u.handle ? String(u.handle).trim() : ''; if(h && h.toLowerCase().startsWith(prefixLC)){ list.push({ label:'@'+h, insert:'@'+h, photoURL: u.photoURL||'' }); } }
+      });
+    }catch(_){ }
+    // if few results, try global handle lookup by prefix
+    if(list.length<5){
+      try{
+        const q = await db.collection('handles').where(firebase.firestore.FieldPath.documentId(), '>=', prefixLC).where(firebase.firestore.FieldPath.documentId(), '<=', prefixLC+'\uf8ff').limit(10).get();
+        q.forEach(doc=>{ const h=doc.id; if(!h) return; if(list.find(x=>x.insert==='@'+h)) return; list.push({ label:'@'+h, insert:'@'+h, photoURL:'' }); });
+      }catch(_){ }
+    }
+    // Clean up: remove empties and dedupe labels; put @friends first, then alpha
+    const seen = new Set();
+    const cleaned = [];
+    for(const it of list){ if(!it || !it.label) continue; if(it.label==='@') continue; if(seen.has(it.label.toLowerCase())) continue; seen.add(it.label.toLowerCase()); cleaned.push(it); }
+    cleaned.sort((a,b)=>{ const af=(a.label==='@friends')?0:1, bf=(b.label==='@friends')?0:1; if(af!==bf) return af-bf; return a.label.toLowerCase().localeCompare(b.label.toLowerCase()); });
+    return cleaned.slice(0,10);
+  }
+
+  let mentionSuggestReq = 0;
+  if(pingTextInput){
+    pingTextInput.addEventListener('input', async ()=>{
+      const req = ++mentionSuggestReq;
+      try{
+        const val = pingTextInput.value||''; const at = val.lastIndexOf('@'); if(at<0){ hideMentionSuggest(); return; }
+        const prefix = val.slice(at+1).toLowerCase().replace(/[^a-z0-9_.]/g,'');
+        if(prefix.length===0){ if(req===mentionSuggestReq) showMentionSuggest([{ label:'@friends', insert:'@friends', photoURL:'' }], pingTextInput); return; }
+        const items = await buildMentionCandidates(prefix);
+        if(req===mentionSuggestReq) showMentionSuggest(items, pingTextInput);
+      }catch(_){ }
+    });
+    document.addEventListener('click', (e)=>{ if(!mentionSuggest) return; if(e.target===mentionSuggest || mentionSuggest.contains(e.target)) return; hideMentionSuggest(); });
+  }
+
+  // Reverted: remove Add Friend suggestions
+  async function buildMentionTargets({ text, ranges, handles, hasFriends, pingDoc, visibility }){
+    // Resolve explicit handles to UIDs
+    const mapHandleToUid = new Map();
+    for(const h of handles){ if(!mapHandleToUid.has(h)){ const uid = await resolveUidByHandle(h); mapHandleToUid.set(h, uid); } }
+    // Validate: all handles must resolve
+    const invalid = [...mapHandleToUid.entries()].filter(([h,uid])=>!uid).map(([h])=>'@'+h);
+    if(invalid.length){ throw new Error('invalid:'+invalid[0]); }
+    // Enforce mention count limit (explicit + friends token as 1)
+    const countItems = (hasFriends?1:0) + [...new Set(handles)].length;
+    if(countItems>10) throw new Error('too_many');
+    // Private restriction: only mention viewers
+    let viewerSet = null;
+    if(visibility==='private' && pingDoc){
+      try{ const author = pingDoc.authorId; const d = await usersRef.doc(author).get(); const f = d.exists ? (d.data().friendIds||[]) : []; viewerSet = new Set([author, ...f]); }catch(_){ viewerSet = new Set([pingDoc.authorId]); }
+    }
+    const currentUid = currentUser ? currentUser.uid : null;
+    // Resolve explicit mention ranges to uids and filter rules (ignore self, private viewers)
+    const finalRanges = [];
+    const targetUids = new Set();
+    for(const r of ranges){ const uid = mapHandleToUid.get(r.handleLC)||null; if(!uid) continue; if(uid===currentUid) continue; if(viewerSet && !viewerSet.has(uid)) continue; finalRanges.push({ start:r.start, end:r.end, uid }); targetUids.add(uid); }
+    // Expand @friends within allowed viewers
+    if(hasFriends && currentUid){
+      const myF = myFriends ? new Set([...myFriends]) : new Set();
+      let friendTargets = [...myF];
+      if(viewerSet){ friendTargets = friendTargets.filter(uid=>viewerSet.has(uid)); }
+      friendTargets.forEach(uid=>{ if(uid!==currentUid) targetUids.add(uid); });
+    }
+    return { finalRanges, targetUids: [...targetUids] };
+  }
+  async function sendMentionNotifications(kind, pingId, commentId, targetUids){
+    if(!targetUids || !targetUids.length || !currentUser) return;
+    // Daily cap
+    try{
+      const todayKey = dateKey(montrealNow()).replace(/-/g,'');
+      await db.runTransaction(async (tx)=>{
+        const qref = db.collection('meta').doc('mention_quota_'+currentUser.uid+'_'+todayKey);
+        const snap = await tx.get(qref);
+        const sent = snap.exists ? Number(snap.data().sent||0) : 0;
+        const budget = Math.max(0, 50 - sent);
+        const sendList = targetUids.slice(0, budget);
+        // Write notifications for sendList
+        for(const uid of sendList){
+          try{
+            const nref = usersRef.doc(uid).collection('notifications').doc(kind+'_'+pingId+(commentId?('_'+commentId):''));
+            const nsnap = await tx.get(nref); if(!nsnap.exists){ tx.set(nref, { type:kind, from: currentUser.uid, pingId, commentId: commentId||null, createdAt: firebase.firestore.FieldValue.serverTimestamp() }); }
+          }catch(_){ }
+        }
+        tx.set(qref, { sent: sent + sendList.length, updatedAt: firebase.firestore.FieldValue.serverTimestamp() }, { merge:true });
+      });
+    }catch(_){ }
+  }
+  async function renderTextWithMentions(el, text, mentionRanges){
+    try{
+      el.textContent=''; const frag=document.createDocumentFragment();
+      const ranges = Array.isArray(mentionRanges) ? [...mentionRanges].sort((a,b)=>a.start-b.start) : [];
+      let idx=0;
+      for(const r of ranges){
+        const before = text.slice(idx, r.start); if(before) frag.appendChild(document.createTextNode(before));
+        const chip=document.createElement('span'); chip.className='mention';
+        const basics = await getUserBasics(r.uid);
+        const label = basics.handle ? '@'+basics.handle : '@friend';
+        chip.textContent = label;
+        chip.onclick = ()=> openOtherProfile(r.uid);
+        frag.appendChild(chip);
+        idx = r.end;
+      }
+      const tail = text.slice(idx); if(tail) frag.appendChild(document.createTextNode(tail));
+      el.appendChild(frag);
+    }catch(_){ el.textContent = text||''; }
+  }
+
   async function ensureIdentityMappings(user){
     // Ensure handle
     try{
@@ -1066,11 +1709,20 @@ startRequestsListeners(currentUser.uid);
     const q = await db.collection('friendRequests').where('from','==',fromUid).where('createdAt','>=', new Date(since)).get().catch(()=>null);
     if(q && q.size>=20) throw new Error('limit');
 
-    const myDoc = await db.collection('friendRequests').doc(fromUid+'_'+toUid).get();
+    const reqId = fromUid+'_'+toUid;
+    const myDoc = await db.collection('friendRequests').doc(reqId).get();
     if(myDoc.exists){
       const st = (myDoc.data().status||'pending');
       if(st==='pending') throw new Error('already pending');
-      if(st==='accepted') throw new Error('already friends');
+      if(st==='accepted'){
+        // Check real friend state; if removed, reset to pending
+        const [a,b] = await Promise.all([usersRef.doc(fromUid).get(), usersRef.doc(toUid).get()]);
+        const aHas = a.exists && Array.isArray(a.data().friendIds) && a.data().friendIds.includes(toUid);
+        const bHas = b.exists && Array.isArray(b.data().friendIds) && b.data().friendIds.includes(fromUid);
+        if(aHas && bHas){ throw new Error('already friends'); }
+        // Stale accepted doc — overwrite as pending
+        await db.collection('friendRequests').doc(reqId).set({ from: fromUid, to: toUid, status:'pending', createdAt: firebase.firestore.FieldValue.serverTimestamp() }, { merge:true });
+      }
     }
 
     // Cross-request auto-accept
@@ -1119,6 +1771,24 @@ startRequestsListeners(currentUser.uid);
       tx.update(bRef, { friendIds: firebase.firestore.FieldValue.arrayUnion(fromUid) });
       tx.update(rRef, { status:'accepted', acceptedAt: firebase.firestore.FieldValue.serverTimestamp() });
     });
+    // Award PPs to both friends once (dedupe via meta doc)
+    try{
+      const [fromUid,toUid] = reqId.split('_');
+      const metaId = `friend_award_${[fromUid,toUid].sort().join('_')}`;
+      await db.runTransaction(async (tx)=>{
+        const mref = db.collection('meta').doc(metaId);
+        const msnap = await tx.get(mref);
+        if(msnap.exists) return;
+        tx.set(mref, { type:'friend_award', at: firebase.firestore.FieldValue.serverTimestamp() });
+        const aRef = usersRef.doc(fromUid), bRef = usersRef.doc(toUid);
+        const [aSnap,bSnap] = await Promise.all([tx.get(aRef), tx.get(bRef)]);
+        const aPts = Math.max(0, Number(aSnap.exists ? aSnap.data().points||0 : 0) + 5);
+        const bPts = Math.max(0, Number(bSnap.exists ? bSnap.data().points||0 : 0) + 5);
+        tx.set(aRef, { points: aPts }, { merge:true });
+        tx.set(bRef, { points: bPts }, { merge:true });
+      });
+      showToast('+5 PPs — friend connected');
+    }catch(_){ }
     // Notify sender (dedupe via fixed doc id)
     try{
       await db.runTransaction(async tx=>{
@@ -1132,12 +1802,16 @@ startRequestsListeners(currentUser.uid);
   async function declineFriendRequest(reqId){
     const rRef = db.collection('friendRequests').doc(reqId);
     await rRef.set({ status:'declined', decidedAt: firebase.firestore.FieldValue.serverTimestamp() }, { merge:true });
+    // Clean up stale reverse request if exists and not accepted
+    try{ const [a,b]=reqId.split('_'); const rev=db.collection('friendRequests').doc(b+'_'+a); const doc=await rev.get(); if(doc.exists && (doc.data().status||'pending')!=='accepted'){ await rev.delete(); } }catch(_){ }
   }
   async function cancelFriendRequest(reqId){
     const rRef = db.collection('friendRequests').doc(reqId);
     const doc = await rRef.get(); if(!doc.exists) return;
     if(doc.data().from!==currentUser.uid) throw new Error('not sender');
     await rRef.set({ status:'canceled', decidedAt: firebase.firestore.FieldValue.serverTimestamp() }, { merge:true });
+    // Clean up reverse pending request
+    try{ const [a,b]=reqId.split('_'); const rev=db.collection('friendRequests').doc(b+'_'+a); const d=await rev.get(); if(d.exists && (d.data().status||'pending')!=='accepted'){ await rev.delete(); } }catch(_){ }
   }
 
   // Requests UI (Profile modal)
@@ -1159,8 +1833,9 @@ startRequestsListeners(currentUser.uid);
     const outSS = await db.collection('friendRequests').where('from','==',currentUser.uid).where('status','==','pending').get();
 
     const items=[];
-    for(const doc of inSS.docs){ items.push({ id:doc.id, dir:'in', ...doc.data() }); }
-    for(const doc of outSS.docs){ items.push({ id:doc.id, dir:'out', ...doc.data() }); }
+    const seen = new Set();
+    for(const doc of inSS.docs){ if(!seen.has(doc.id)){ items.push({ id:doc.id, dir:'in', ...doc.data() }); seen.add(doc.id); } }
+    for(const doc of outSS.docs){ if(!seen.has(doc.id)){ items.push({ id:doc.id, dir:'out', ...doc.data() }); seen.add(doc.id); } }
     if(!items.length){ cont.innerHTML='<div class="muted">No pending requests.</div>'; return; }
 
     cont.innerHTML='';
@@ -1169,7 +1844,7 @@ startRequestsListeners(currentUser.uid);
       const ud = await usersRef.doc(other).get();
       const nm = ud.exists ? (ud.data().displayName||ud.data().handle||'Friend') : 'Friend';
       const row = document.createElement('div'); row.className='req-card';
-      row.innerHTML = '<div><strong>'+nm+'</strong><br/><small style="font-family:monospace">'+other+'</small></div>';
+      row.innerHTML = '<div><strong>'+nm+'</strong></div>';
       const actions = document.createElement('div'); actions.className='req-actions';
       if(it.dir==='in'){
         const acc=document.createElement('button'); acc.className='btn'; acc.textContent='✓';
@@ -1257,10 +1932,16 @@ startRequestsListeners(currentUser.uid);
           }
         }catch(_){ }
       }
-      if(handleInput){
-        try{ const d=await usersRef.doc(currentUser.uid).get(); const h=d.exists? (d.data().handle||'') : ''; handleInput.value = h || ''; }catch(_){ }
-      }
-      if(emailDisplay){ const d=await usersRef.doc(currentUser.uid).get(); const em = d.exists? (d.data().email||currentUser.email||''): (currentUser.email||''); emailDisplay.textContent = em || 'No email'; }
+      if(handleInput){ try{ const d=await usersRef.doc(currentUser.uid).get(); const h=d.exists? (d.data().handle||'') : ''; handleInput.value = h || ''; }catch(_){ } }
+      if(emailDisplay){ try{ const d=await usersRef.doc(currentUser.uid).get(); const em = d.exists? (d.data().email||currentUser.email||''): (currentUser.email||''); emailDisplay.textContent = em || 'No email'; }catch(_){ } }
+      // Stats line: PPs and streak
+      try{
+        const s=document.getElementById('ownStatsLine');
+        const d=await usersRef.doc(currentUser.uid).get();
+        const pts = d.exists ? Number(d.data().points||0) : 0;
+        const streak = d.exists ? Number(d.data().streakDays||0) : 0;
+        if(s) s.textContent = `${pts} PPs • 🔥 ${streak}`;
+      }catch(_){ }
     }catch(_){ }
     await refreshFriends();
     openModal('profileModal');
@@ -1276,13 +1957,32 @@ startRequestsListeners(currentUser.uid);
       const back = document.getElementById('backToProfile'); if(back) back.style.display='none';
       const settings = document.getElementById('settingsSection'); if(settings) settings.style.display='none';
       const actions = document.getElementById('profileActions'); if(actions) actions.style.display='none';
-      const av = document.getElementById('otherProfileAvatar'); if(av){ const url = u.photoURL||''; av.style.backgroundImage = url ? `url("${url}")` : ''; }
+      const av = document.getElementById('otherProfileAvatar');
+      if(av){
+        const url = u.photoURL||'';
+        if(url){
+          av.style.backgroundImage = `url("${url}")`;
+          av.style.backgroundSize = 'cover';
+          av.style.backgroundPosition = 'center';
+          av.style.backgroundRepeat = 'no-repeat';
+          av.classList.add('custom-avatar');
+        } else {
+          av.style.backgroundImage = '';
+          av.classList.remove('custom-avatar');
+        }
+      }
       const nm = document.getElementById('otherProfileName');
       if(nm){
         const handle = (u && u.handle) ? String(u.handle).trim() : '';
         const display = handle ? `@${handle}` : (u.displayName || u.email || 'Friend');
         nm.textContent = display;
       }
+      try{
+        const s=document.getElementById('otherStatsLine');
+        const pts = Number(u.points||0);
+        const streak = Number(u.streakDays||0);
+        if(s) s.textContent = `${pts} PPs • 🔥 ${streak}`;
+      }catch(_){ }
       openModal('profileModal');
     }catch(e){ console.error(e); showToast('Could not load profile'); }
   }
@@ -1331,15 +2031,18 @@ startRequestsListeners(currentUser.uid);
         if(!raw) return;
         raw = raw.toLowerCase().replace(/[^a-z0-9_.]/g,'').slice(0,24);
         if(!raw) return showToast('Invalid username');
-        // Check availability
-        const exists = await db.collection('handles').doc(raw).get();
-        if(exists.exists){ showToast('Name taken'); return; }
-        // Move previous handle if any
+        if(raw === 'friends') return showToast('That name is reserved');
+        // Check availability (allow if it's already mine)
+        const hRef = db.collection('handles').doc(raw);
+        const exists = await hRef.get();
+        if(exists.exists && exists.data() && exists.data().uid !== currentUser.uid){ showToast('Name taken'); return; }
+        // Move previous handle if any (skip if unchanged)
         const uref = usersRef.doc(currentUser.uid); const ud = await uref.get(); const prev = ud.exists? (ud.data().handle||null) : null;
+        if(prev === raw){ await refreshAuthUI(currentUser); showToast('Username saved'); return; }
         await db.runTransaction(async tx=>{
-          if(prev){ tx.delete(db.collection('handles').doc(prev)); }
-          tx.set(db.collection('handles').doc(raw), { uid: currentUser.uid, updatedAt: firebase.firestore.FieldValue.serverTimestamp() });
-          tx.set(uref, { handle: raw, handleLC: raw.toLowerCase() }, { merge:true });
+          if(prev && prev !== raw){ tx.delete(db.collection('handles').doc(prev)); }
+          tx.set(hRef, { uid: currentUser.uid, updatedAt: firebase.firestore.FieldValue.serverTimestamp() });
+          tx.set(uref, { handle: raw, handleLC: raw }, { merge:true });
         });
         await refreshAuthUI(currentUser);
         showToast('Username updated');
@@ -1559,26 +2262,43 @@ startRequestsListeners(currentUser.uid);
   }
 
 
+  let friendsRenderToken = 0;
   async function refreshFriends(){
     const friendList = document.getElementById('profileFriendsList');
     const myCodeEl = document.getElementById('myCodeEl');
     if(!friendList){ return; }
     if(!currentUser){ friendList.innerHTML='<div class="muted">Sign in to manage friends.</div>'; return; }
     const doc=await usersRef.doc(currentUser.uid).get(); const data=doc.exists? doc.data():{friendIds:[], isSubscriber:false};
-    myFriends=new Set(data.friendIds||[]); if(myCodeEl) myCodeEl.value=currentUser.uid; isSubscriber = !!data.isSubscriber;
+    // Dedup and normalize friend list
+    const originalIds = (data.friendIds||[]).filter(Boolean);
+    const uniqueIds = Array.from(new Set(originalIds));
+    if(uniqueIds.length !== originalIds.length){ try{ await usersRef.doc(currentUser.uid).set({ friendIds: uniqueIds }, { merge:true }); }catch(_){ } }
+    myFriends=new Set(uniqueIds); if(myCodeEl) myCodeEl.value=currentUser.uid; isSubscriber = !!data.isSubscriber;
+    const token = ++friendsRenderToken;
     friendList.innerHTML='';
-    if(!myFriends.size){ friendList.innerHTML='<div class="muted">No friends yet. Share your code above.</div>'; reFilterMarkers(); return; }
-    for(const fid of myFriends){
-      const fdoc=await usersRef.doc(fid).get();
-      const data=fdoc.exists ? fdoc.data() : {};
-      const handle = data && data.handle ? String(data.handle).trim() : '';
-      const displayName = handle ? `@${handle}` : (data.displayName || data.email || 'Friend');
-      const row=document.createElement('div'); row.className='friend-item'; row.setAttribute('tabindex','0'); row.style.cursor='pointer'; row.onclick=()=>openOtherProfile(fid); row.onkeydown=(e)=>{ if(e.key==='Enter'||e.key===' '){ e.preventDefault(); openOtherProfile(fid); } };
-      row.innerHTML=`<div><strong>${displayName}</strong><br/><small style="font-family:monospace">${fid}</small></div>`;
+    if(!uniqueIds.length){ friendList.innerHTML='<div class="muted">No friends yet. Share your code above.</div>'; reFilterMarkers(); return; }
+    // Fetch friend docs in parallel
+    const docs = await Promise.all(uniqueIds.map(fid=> usersRef.doc(fid).get().catch(()=>null)));
+    if(token!==friendsRenderToken) return; // stale render
+    const friends = uniqueIds.map((fid, idx)=>{
+      const fdoc = docs[idx]; const d = fdoc && fdoc.exists ? fdoc.data() : {};
+      const handle = d && d.handle ? String(d.handle).trim() : '';
+      const name = handle ? `@${handle}` : (d.displayName || d.email || 'Friend');
+      return { fid, name };
+    }).sort((a,b)=> a.name.toLowerCase().localeCompare(b.name.toLowerCase()));
+    if(token!==friendsRenderToken) return;
+    const frag=document.createDocumentFragment();
+    for(const fr of friends){
+      const row=document.createElement('div'); row.className='friend-item'; row.setAttribute('tabindex','0'); row.style.cursor='pointer'; row.onclick=()=>openOtherProfile(fr.fid); row.onkeydown=(e)=>{ if(e.key==='Enter'||e.key===' '){ e.preventDefault(); openOtherProfile(fr.fid); } };
+      row.innerHTML=`<div><strong>${fr.name}</strong></div>`;
       const rm=document.createElement('button'); rm.className='btn'; rm.textContent='Remove';
-      rm.onclick=async(e)=>{ e.stopPropagation(); await usersRef.doc(currentUser.uid).set({ friendIds: firebase.firestore.FieldValue.arrayRemove(fid) },{merge:true}); await usersRef.doc(fid).set({ friendIds: firebase.firestore.FieldValue.arrayRemove(currentUser.uid) },{merge:true}); showToast('Removed'); refreshFriends(); };
-      row.appendChild(rm); friendList.appendChild(row);
+      rm.onclick=async(e)=>{ e.stopPropagation(); await usersRef.doc(currentUser.uid).set({ friendIds: firebase.firestore.FieldValue.arrayRemove(fr.fid) },{merge:true}); await usersRef.doc(fr.fid).set({ friendIds: firebase.firestore.FieldValue.arrayRemove(currentUser.uid) },{merge:true});
+        // Clean up any accepted/pending request docs between these two users
+        try{ const ids=[currentUser.uid, fr.fid]; const pair=[ids[0]+'_'+ids[1], ids[1]+'_'+ids[0]]; for(const id of pair){ const r= db.collection('friendRequests').doc(id); const rd=await r.get(); if(rd.exists){ const st=rd.data().status||'pending'; if(st!=='accepted'){ await r.delete(); } else { await r.set({ status:'canceled', decidedAt: firebase.firestore.FieldValue.serverTimestamp() }, { merge:true }); } } } }catch(_){ }
+        showToast('Removed'); refreshFriends(); };
+      row.appendChild(rm); frag.appendChild(row);
     }
+    friendList.innerHTML=''; friendList.appendChild(frag);
     reFilterMarkers();
   }
 
@@ -1694,6 +2414,12 @@ startRequestsListeners(currentUser.uid);
     const net = Math.max(0, (currentPotw.likes||0)-(currentPotw.dislikes||0));
     potwMeta.textContent = `${whoShort} • ${net} likes`;
 
+    // Countdown to week end (Montreal time)
+    try{
+      const cd = document.getElementById('potwCountdown');
+      if(cd){ cd.textContent = potwEndsInText(); }
+    }catch(_){ }
+
     if(currentPotw.imageUrl){ potwImg.src=currentPotw.imageUrl; potwImg.style.display='block'; }
     else { potwImg.style.display='none'; }
 
@@ -1708,7 +2434,28 @@ startRequestsListeners(currentUser.uid);
         void m._icon.offsetWidth; // restart animation
         m._icon.classList.add('potw-pulse');
       }
+      // Subtle confetti burst near the card
+      try{ triggerConfettiAtCard(); }catch(_){ }
     };
+  }
+
+  function triggerConfettiAtCard(){
+    try{
+      const card = document.getElementById('potwCard'); if(!card) return;
+      let layer = card.querySelector('.confetti-layer');
+      if(!layer){ layer = document.createElement('div'); layer.className='confetti-layer'; card.appendChild(layer); }
+      // Create ~18 pieces around the title area
+      for(let i=0;i<18;i++){
+        const piece=document.createElement('div'); piece.className='confetti-piece';
+        piece.style.left = (40 + Math.random()*40) + '%';
+        piece.style.top  = (8 + Math.random()*18) + 'px';
+        const colors=['#f59e0b','#d4af37','#10b981','#3b82f6','#ef4444'];
+        piece.style.backgroundColor = colors[Math.floor(Math.random()*colors.length)];
+        piece.style.transform = `translateY(0) rotate(${Math.floor(Math.random()*60)}deg)`;
+        layer.appendChild(piece);
+        setTimeout(()=>{ try{ piece.remove(); }catch(_){ } }, 950);
+      }
+    }catch(_){ }
   }
 
   function eligibleForPotw(p){
@@ -1800,11 +2547,28 @@ startRequestsListeners(currentUser.uid);
     // Notify PotW winner when a new winner is set
     try{
       if(currentPotw && currentPotw.authorId){
-        usersRef.doc(currentPotw.authorId).collection('notifications').add({
-          type:'potw_awarded',
-          pingId: currentPotw.id,
-          net: currentPotw.net || netLikes(lastPingCache.get(currentPotw.id) || {}),
-          createdAt: firebase.firestore.FieldValue.serverTimestamp()
+        // Deduped PotW notification: write to fixed doc id per week+winner
+        const monday1 = startOfWeekMondayLocal();
+        const weekKey1 = `${monday1.getFullYear()}_${monday1.getMonth()+1}_${monday1.getDate()}`;
+        const notifId = `potw_${weekKey1}_${currentPotw.id}`;
+        await db.runTransaction(async (tx)=>{
+          const nref = usersRef.doc(currentPotw.authorId).collection('notifications').doc(notifId);
+          const ns = await tx.get(nref);
+          if(!ns.exists){ tx.set(nref, { type:'potw_awarded', pingId: currentPotw.id, net: currentPotw.net || netLikes(lastPingCache.get(currentPotw.id) || {}), bonus:75, createdAt: firebase.firestore.FieldValue.serverTimestamp() }); }
+        });
+        // Award PotW PPs once per week per winner (client-side dedupe via meta)
+        const monday2 = startOfWeekMondayLocal();
+        const weekKey2 = `${monday2.getFullYear()}_${monday2.getMonth()+1}_${monday2.getDate()}`;
+        const metaId = `potw_${weekKey2}_${currentPotw.authorId}`;
+        await db.runTransaction(async (tx)=>{
+          const mref = db.collection('meta').doc(metaId);
+          const msnap = await tx.get(mref);
+          if(msnap.exists) return;
+          tx.set(mref, { type:'potw_award', at: firebase.firestore.FieldValue.serverTimestamp(), pid: currentPotw.id });
+          const uref = usersRef.doc(currentPotw.authorId);
+          const usnap = await tx.get(uref);
+          const prevPts = usnap.exists ? Number(usnap.data().points||0) : 0;
+          tx.set(uref, { points: Math.max(0, prevPts + 75) }, { merge:true });
         });
       }
     }catch(e){ console.warn('potw notify failed', e); }
@@ -1834,6 +2598,9 @@ startRequestsListeners(currentUser.uid);
     }, e=>console.error(e));
   }
   startPotwListener();
+
+  // Update PotW countdown every 60s
+  setInterval(()=>{ try{ const cd=document.getElementById('potwCountdown'); if(cd){ cd.textContent = potwEndsInText(); } }catch(_){ } }, 60*1000);
 
   /* --------- Auth state --------- */
   auth.onAuthStateChanged(async (u)=>{
