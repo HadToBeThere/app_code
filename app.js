@@ -1,4 +1,4 @@
-window.addEventListener('load', async () => {
+(async function(){
   /* --------- Splash --------- */
   const splash = document.getElementById('splash');
   const startGlobe = document.getElementById('startGlobe');
@@ -41,7 +41,7 @@ window.addEventListener('load', async () => {
 
   /* --------- Config --------- */
   const DEFAULT_CENTER = [45.5048, -73.5772];
-  const RADIUS_M = 1609; // 1 mile
+  const RADIUS_M = 3219; // 2 miles
   const MAX_PINGS_PER_DAY = 3;
   const MIN_MILLIS_BETWEEN_PINGS = 5*60*1000; // 5 minutes
   const LIVE_WINDOW_MS = 24*3600*1000;
@@ -81,7 +81,36 @@ window.addEventListener('load', async () => {
   const $ = s=>document.querySelector(s);
   const $$ = s=>document.querySelectorAll(s);
   const toastEl = $('#toast');
-  const showToast=(msg)=>{ toastEl.textContent=msg; toastEl.classList.add('show'); setTimeout(()=>toastEl.classList.remove('show'),6000); };
+  // Toast system with types and queue
+  const toastQueue = [];
+  let toastShowing = false;
+  function showToast(message, type='info'){
+    try{
+      const duration = type==='error' ? 5000 : type==='warning' ? 4000 : 3000;
+      toastQueue.push({ message:String(message||''), type, duration });
+      if(!toastShowing) dequeueToast();
+    }catch(_){ }
+  }
+  function styleToast(kind){
+    try{
+      toastEl.className = 'toast show';
+      // Basic color coding by type without changing layout
+      if(kind==='success'){ toastEl.style.background='#111'; toastEl.style.border='1px solid #16a34a'; }
+      else if(kind==='error'){ toastEl.style.background='#111'; toastEl.style.border='1px solid #ef4444'; }
+      else if(kind==='warning'){ toastEl.style.background='#111'; toastEl.style.border='1px solid #f59e0b'; }
+      else { toastEl.style.background='#111'; toastEl.style.border='1px solid #e6e6e6'; }
+    }catch(_){ }
+  }
+  function dequeueToast(){
+    if(!toastQueue.length){ toastShowing=false; try{ toastEl.classList.remove('show'); }catch(_){ } return; }
+    toastShowing = true;
+    const { message, type, duration } = toastQueue.shift();
+    try{ toastEl.textContent = message; styleToast(type); }catch(_){ }
+    setTimeout(()=>{
+      try{ toastEl.classList.remove('show'); }catch(_){ }
+      setTimeout(()=>{ dequeueToast(); }, 120);
+    }, duration);
+  }
   function montrealNow(){ try{ return new Date(new Date().toLocaleString('en-US', { timeZone: TZ })); }catch(_){ return new Date(); } }
   function dateKey(d){ const y=d.getFullYear(); const m=String(d.getMonth()+1).padStart(2,'0'); const day=String(d.getDate()).padStart(2,'0'); return `${y}-${m}-${day}`; }
 
@@ -300,8 +329,27 @@ window.addEventListener('load', async () => {
       if(bellBtn) bellBtn.style.pointerEvents = 'auto';
     }catch(_){ } 
   }
-  function openModal(id){ document.getElementById(id).classList.add('open'); applyModalOpenClass(); }
+  function openModal(id){
+    document.getElementById(id).classList.add('open');
+    applyModalOpenClass();
+    // Ensure profile modal shows own-profile chrome when opening as the signed-in user
+    if(id==='profileModal'){
+      try{
+        const u = auth.currentUser || null;
+        if(u){
+          const gear = document.getElementById('openSettings'); if(gear) gear.style.display='inline-flex';
+          const back = document.getElementById('backToProfile'); if(back) back.style.display='none';
+          const settings = document.getElementById('settingsSection'); if(settings) settings.style.display='none';
+          const actions = document.getElementById('profileActions'); if(actions) actions.style.display='flex';
+          const signOutBtn = document.getElementById('signOutInProfile'); if(signOutBtn) signOutBtn.style.display='inline-flex';
+        }
+      }catch(_){ }
+    }
+  }
   function closeModal(id){ document.getElementById(id).classList.remove('open'); applyModalOpenClass(); }
+
+  // Notifications elements (needed by refreshAuthUI even when signed out)
+  const notifBadge = $('#notifBadge'), notifsModal = $('#notifsModal'), notifsContent = $('#notifsContent');
 
   // Unified time-ago formatter: s (<60), m (<60), h (<24), then d
   function timeAgo(input){
@@ -564,7 +612,7 @@ startRequestsListeners(currentUser.uid);
           handle: finalHandle,
           handleLC: finalHandle.toLowerCase(),
           createdAt: firebase.firestore.FieldValue.serverTimestamp(),
-          friendIds: [], lastPingAt: null, unreadCount: 0, isSubscriber:false
+          friendIds: [], lastPingAt: null, unreadCount: 0
         }, { merge:true });
       }else{
         // Do not overwrite custom profile fields on re-login except to backfill missing displayName
@@ -574,7 +622,7 @@ startRequestsListeners(currentUser.uid);
         }catch(_){ }
         await ensureIdentityMappings(user);
       }
-      try{ document.getElementById('signInModal').classList.remove('open'); }catch{}
+      try{ document.getElementById('signInModal').classList.remove('open'); }catch(e){}
       // Immediate forced UI flip, then full refresh
       forceAuthUI(user);
       await refreshAuthUI(user);
@@ -634,6 +682,7 @@ startRequestsListeners(currentUser.uid);
   // Hotspot overlay pane (below markers, above inner overlay)
   const HOTSPOT_RADIUS_M = 100;
   const HOTSPOT_MIN_CENTER_SEP_M = 150;
+  const HOTSPOT_MAX_CLUSTERS = 3;
   try{ map.createPane('hotspotPane'); map.getPane('hotspotPane').style.zIndex = 500; }catch(_){ }
   let hotspotLayers=[], hotspotData=[], hotspotTimer=null;
 
@@ -643,11 +692,12 @@ startRequestsListeners(currentUser.uid);
   function clearHotspot(){ if(hotspotLayers&&hotspotLayers.length){ hotspotLayers.forEach(l=>{ try{ map.removeLayer(l); }catch(_){ } }); } hotspotLayers=[]; }
   function updateHotspotVisibility(){ if(filterMode!=='all'){ clearHotspot(); return; } if(hotspotData && hotspotData.length){ drawHotspots(hotspotData); } else { clearHotspot(); } }
 
-  function drawHotspots(list){ if(!list || !list.length) return; if(filterMode!=='all') return; clearHotspot();
+  function drawHotspots(list){ if(filterMode!=='all'){ clearHotspot(); return; } clearHotspot(); if(!list || !list.length) return;
     list.forEach((data,idx)=>{
+      if(typeof data.lat!== 'number' || typeof data.lon!== 'number') return;
       const circle = L.circle([data.lat, data.lon], { radius: HOTSPOT_RADIUS_M, color:'#1d4ed8', weight:2, opacity:.9, fillColor:'#1d4ed8', fillOpacity:.18, pane:'hotspotPane' }).addTo(map);
       hotspotLayers.push(circle);
-      const labelHtml = `<div class=\"hotspot-label\">Hotspot ${idx+1} (${data.count})</div>`;
+      const labelHtml = `<div class=\"hotspot-label\">Hotspot ${idx+1} (${data.count||0})</div>`;
       const icon = L.divIcon({ className:'', html:labelHtml, iconSize:null });
       const label = L.marker([data.lat, data.lon], { icon, pane:'hotspotPane', interactive:false }).addTo(map);
       hotspotLayers.push(label);
@@ -666,7 +716,7 @@ startRequestsListeners(currentUser.uid);
   function recomputeHotspot(){
     hotspotTimer=null;
     // Collect eligible pings (always consider All, independent of current filter selection)
-    const arr=[]; lastPingCache.forEach((p)=>{ if(hotspotEligible(p)) arr.push(p); });
+    const seen=new Set(); const arr=[]; lastPingCache.forEach((p,id)=>{ if(seen.has(id)) return; seen.add(id); if(hotspotEligible(p)) arr.push(p); });
     if(arr.length===0){ hotspotData=[]; updateHotspotVisibility(); return; }
     // Helper to evaluate a center candidate over provided set
     function evaluateCenter(centerPing, pool){
@@ -678,19 +728,19 @@ startRequestsListeners(currentUser.uid);
       const centLL=L.latLng(centLat,centLon); let sumD=0; for(const m of members){ sumD+=centLL.distanceTo([m.lat,m.lon]); }
       const avgDist=sumD/count; return { lat:centLat, lon:centLon, count, avgDist };
     }
-    // First hotspot
-    let best1=null; for(let i=0;i<arr.length;i++){ const cand=evaluateCenter(arr[i], arr); if(!cand) continue; if(!best1 || cand.count>best1.count || (cand.count===best1.count && cand.avgDist<best1.avgDist)) best1=cand; }
-    // Second hotspot: consider candidates whose centers are at least HOTSPOT_MIN_CENTER_SEP_M apart from first
-    let best2=null; if(best1){
+    // Greedily pick up to HOTSPOT_MAX_CLUSTERS separated cluster centers
+    const selected=[];
+    for(let k=0;k<HOTSPOT_MAX_CLUSTERS;k++){
+      let best=null;
       for(let i=0;i<arr.length;i++){
         const cand=evaluateCenter(arr[i], arr); if(!cand) continue;
-        const dist = L.latLng(best1.lat,best1.lon).distanceTo([cand.lat,cand.lon]);
-        if(dist < HOTSPOT_MIN_CENTER_SEP_M) continue;
-        if(!best2 || cand.count>best2.count || (cand.count===best2.count && cand.avgDist<best2.avgDist)) best2=cand;
+        let tooClose=false; for(const prev of selected){ const d=L.latLng(prev.lat,prev.lon).distanceTo([cand.lat,cand.lon]); if(d < HOTSPOT_MIN_CENTER_SEP_M){ tooClose=true; break; } }
+        if(tooClose) continue;
+        if(!best || cand.count>best.count || (cand.count===best.count && cand.avgDist<best.avgDist)) best=cand;
       }
+      if(best) selected.push(best); else break;
     }
-    const list = best2 ? [best1,best2] : (best1 ? [best1] : []);
-    hotspotData=list; saveHotspot(list); updateHotspotVisibility();
+    hotspotData=selected; saveHotspot(selected); updateHotspotVisibility();
   }
 
   // On load, draw last known hotspots so it's consistent across sessions
@@ -771,11 +821,15 @@ startRequestsListeners(currentUser.uid);
   function balloonSVG(color, sizePx, opts={}){
     const w=Math.max(18,Math.min(56,Math.round(sizePx))), h=Math.round(w*1.5);
     const stroke='rgba(0,0,0,0.35)';
-    const M = opts.drawM ? `<text x="12" y="15" text-anchor="middle" font-family="ui-rounded, system-ui, -apple-system, Segoe UI, Inter, Roboto, Arial, sans-serif" font-size="10" font-weight="900" fill="#c01631">M</text>` : `<path d="M9 6 C7.8 6.4,7 7.5,7 8.6" stroke="rgba(255,255,255,0.6)" stroke-width="1.2" fill="none" stroke-linecap="round"/>`;
+    let innerPath = `<path d="M9 6 C7.8 6.4,7 7.5,7 8.6" stroke="rgba(255,255,255,0.6)" stroke-width="1.2" fill="none" stroke-linecap="round"/>`;
+    if(opts.variant==='alien'){ innerPath = `<circle cx="12" cy="11" r="4" fill="#a7f3d0"/><ellipse cx="10.5" cy="10" rx="1.6" ry="2.2" fill="#111"/><ellipse cx="13.5" cy="10" rx="1.6" ry="2.2" fill="#111"/>`; }
+    if(opts.variant==='galactic'){ innerPath = `<circle cx="12" cy="11" r="4" fill="#93c5fd"/><circle cx="12" cy="11" r="3" fill="none" stroke="#1d4ed8" stroke-width="1"/><circle cx="15" cy="10" r="1" fill="#f59e0b"/>`; }
+    if(opts.variant==='nuke'){ innerPath = `<path d="M6 11 h12 M12 11 v6 M9 17 h6" stroke="#111" stroke-width="1.2"/>`; }
+    if(opts.image){ innerPath = `<defs><clipPath id="pinClip"><path d=\"M12 2 C7 2, 4 5.5, 4 10 c0 6, 8 12, 8 12 s8-6, 8-12 c0-4.5-3-8-8-8z\"/></clipPath></defs><image href="${opts.image}" x="3" y="2" width="18" height="20" preserveAspectRatio="xMidYMid slice" clip-path="url(#pinClip)"/>`; }
     const svg=`<svg width="${w}" height="${h}" viewBox="0 0 24 32" xmlns="http://www.w3.org/2000/svg">
       <defs><filter id="pinShadow" x="-50%" y="-50%" width="200%" height="200%"><feDropShadow dx="0" dy="2" stdDeviation="1.6" flood-color="rgba(0,0,0,0.35)"/></filter></defs>
       <path d="M12 2 C7 2, 4 5.5, 4 10 c0 6, 8 12, 8 12 s8-6, 8-12 c0-4.5-3-8-8-8z" fill="${color}" stroke="${stroke}" stroke-width="1.5" filter="url(#pinShadow)"/>
-      ${M}
+      ${innerPath}
     </svg>`;
     return {html:svg, size:[w,h], anchor:[w/2,h]};
   }
@@ -786,11 +840,10 @@ startRequestsListeners(currentUser.uid);
     if (mine) return { kind:'mine', color:'#16a34a' };
     const friend = myFriends.has(p.authorId);
     if (friend) return { kind:'friend', color:'#f59e0b' };
-    if (p.authorIsSubscriber) return { kind:'subM', color:'#ffffff' };
     return { kind:'other', color:'#0ea5e9' };
   }
 
-  function iconForPing(p, isPotw=false){
+  async function iconForPing(p, isPotw=false){
     const n = netLikes(p);
     // Normal size
     let r = radiusFromNet(n);
@@ -807,17 +860,36 @@ startRequestsListeners(currentUser.uid);
     }
     const px = r*2.2 * zoomFactor();
 
-    const style = colorForPing(p);
+    // Determine custom ping style for self and non-friends
+    let style = colorForPing(p);
+    try{
+      const u = await awaitCachedUser(p.authorId);
+      if(u && u.selectedPingTier){
+        const tier = Number(u.selectedPingTier||0);
+        // Use customUrl for 1000-tier only
+        style = { kind: style.kind, color: style.color, customTier: tier, customUrl: u.customPingUrl };
+      }
+    }catch(_){ }
     let inner;
     if(isPotw){
       // PotW marker is always gold, regardless of author relationship
       const {html,size,anchor}=balloonSVG('#d4af37',px);
       inner = L.divIcon({className:'pin-icon', html, iconSize:size, iconAnchor:anchor});
-    }else if(style.kind==='subM' && !myFriends.has(p.authorId) && !(currentUser && p.authorId===currentUser.uid)){
-      inner = mIcon(px);
     }else{
-      const {html,size,anchor}=balloonSVG(style.color,px);
-      inner = L.divIcon({className:'pin-icon', html, iconSize:size, iconAnchor:anchor});
+      if(style.customTier){
+        let color = style.color;
+        let variant=null, image=null;
+        if(style.customTier===100){ color = '#7c3aed'; }
+        if(style.customTier===200){ variant='alien'; color='#0ea5e9'; }
+        if(style.customTier===300){ variant='galactic'; color='#0f172a'; }
+        if(style.customTier===500){ variant='nuke'; color='#fde047'; }
+        if(style.customTier===1000 && style.customUrl){ image=style.customUrl; color='#ffffff'; }
+        const {html,size,anchor}=balloonSVG(color,px,{variant,image});
+        inner = L.divIcon({className:'pin-icon', html, iconSize:size, iconAnchor:anchor});
+      } else {
+        const {html,size,anchor}=balloonSVG(style.color,px);
+        inner = L.divIcon({className:'pin-icon', html, iconSize:size, iconAnchor:anchor});
+      }
     }
 
     if(!isPotw) return inner;
@@ -849,9 +921,16 @@ startRequestsListeners(currentUser.uid);
   }
 
   /* --------- Live markers --------- */
+  // Hoist PotW state so functions below can reference it before recompute
+  let currentPotw = null; // { id, text, net, likes, dislikes, imageUrl, lat, lon, authorId, authorName }
   const markers=new Map(); const lastPingCache=new Map(); let unsubscribe=null;
   let currentUser=null, myFriends=new Set();
-  let isSubscriber=false;
+  // Simple user doc cache for rendering custom pings
+  const userDocCache = new Map();
+  async function awaitCachedUser(uid){
+    if(userDocCache.has(uid)) return userDocCache.get(uid);
+    try{ const snap=await usersRef.doc(uid).get(); const data=snap.exists? snap.data():null; userDocCache.set(uid,data); return data; }catch(_){ return null; }
+  }
 
   function isMine(p){ return currentUser && p.authorId===currentUser.uid; }
   function isFriend(p){ return myFriends.has(p.authorId); }
@@ -876,11 +955,11 @@ startRequestsListeners(currentUser.uid);
     return true;
   }
 
-  function upsertMarker(p){
+  async function upsertMarker(p){
     if(typeof p.lat!=='number' || typeof p.lon!=='number') return;
     const isPotw = !!(currentPotw && currentPotw.id===p.id);
     if(!shouldShow(p)){ removeMarker(p.id); return; }
-    const icon=iconForPing(p, isPotw);
+    const icon=await iconForPing(p, isPotw);
     if(!markers.has(p.id)){
       const m=L.marker([p.lat,p.lon],{icon}).addTo(map).on('click',()=>openSheet(p.id));
       markers.set(p.id,m);
@@ -892,7 +971,7 @@ startRequestsListeners(currentUser.uid);
   }
   function removeMarker(id){ const m=markers.get(id); if(m){ map.removeLayer(m); markers.delete(id); } }
   function reFilterMarkers(){ lastPingCache.forEach((p,id)=>{ const allowed=shouldShow(p); const on=markers.has(id); if(allowed&&!on) upsertMarker(p); else if(!allowed&&on) removeMarker(id); }); updateHotspotVisibility(); }
-  function restyleMarkers(){ markers.forEach((m,id)=>{ const p=lastPingCache.get(id); if(!p) return; const isPotw=!!(currentPotw && currentPotw.id===id); m.setIcon(iconForPing(p, isPotw)); }); }
+  function restyleMarkers(){ markers.forEach(async (m,id)=>{ try{ const p=lastPingCache.get(id); if(!p) return; const isPotw=!!(currentPotw && currentPotw.id===id); const icon = await iconForPing(p, isPotw); m.setIcon(icon); }catch(_){ } }); }
 
   function startLive(){
     if(unsubscribe) unsubscribe();
@@ -922,7 +1001,7 @@ startRequestsListeners(currentUser.uid);
   async function todayCount(uid){
     const start=new Date(); start.setHours(0,0,0,0);
     try{ const qs=await pingsRef.where('authorId','==',uid).where('createdAt','>=',start).get(); return qs.size; }
-    catch{ const qs=await pingsRef.where('authorId','==',uid).get(); let c=0; qs.forEach(d=>{ const t=d.data().createdAt?.toDate?.(); if(t && t>=start) c++; }); return c; }
+    catch(e){ const qs=await pingsRef.where('authorId','==',uid).get(); let c=0; qs.forEach(d=>{ const t=d.data().createdAt?.toDate?.(); if(t && t>=start) c++; }); return c; }
   }
   async function refreshQuota(uid){
     if(isUnlimited()){ $('#quotaText').textContent=`∞/${MAX_PINGS_PER_DAY} pings today`; return 0; }
@@ -1009,26 +1088,12 @@ startRequestsListeners(currentUser.uid);
   const attachInput = document.getElementById('pingMedia');
   const pingTextInput = document.getElementById('pingText');
   const mentionSuggest = document.getElementById('mentionSuggest');
-  const subscribeBtn = $('#subscribeBtn');
   const attachPreview = document.getElementById('attachPreview');
   const attachPreviewImg = document.getElementById('attachPreviewImg');
   const attachVideoPreview = document.getElementById('attachVideoPreview');
   const attachPreviewVid = document.getElementById('attachPreviewVid');
 
-  subscribeBtn.onclick = ()=>{
-    if(!currentUser || currentUser.isAnonymous) return showToast('Sign in to subscribe');
-    openModal('subscribeModal');
-  };
-  $('#closeSub').onclick = ()=> closeModal('subscribeModal');
-  $('#confirmSub').onclick = async ()=>{
-    try{
-      if(!currentUser || currentUser.isAnonymous) return showToast('Sign in first');
-      await usersRef.doc(currentUser.uid).set({ isSubscriber: true }, { merge:true });
-      isSubscriber = true;
-      closeModal('subscribeModal');
-      showToast('Subscribed! You can attach images now.');
-    }catch(e){ console.error(e); showToast('Subscription failed'); }
-  };
+  // Subscriber UI removed
 
   $('#addBtn').onclick=()=>{
     if(!currentUser) return showToast('Sign in first');
@@ -1037,12 +1102,11 @@ startRequestsListeners(currentUser.uid);
     const base=(userPos && userPos.distanceTo(FENCE_CENTER)<=RADIUS_M) ? userPos : FENCE_CENTER;
     latEl.value=base.lat.toFixed(6); lonEl.value=base.lng.toFixed(6);
     openModal('createModal');
-    // Disable attach for non-subscribers
+    // Reset preview and ensure attach is enabled for all users
     try{
       const lbl = document.getElementById('attachMediaLabel');
-      if(attachInput) attachInput.disabled = !isSubscriber;
-      if(lbl){ if(!isSubscriber){ lbl.classList.add('muted'); lbl.style.pointerEvents='none'; lbl.title='Subscribe to attach media'; } else { lbl.classList.remove('muted'); lbl.style.pointerEvents='auto'; lbl.title='Attach Media'; } }
-      // Reset preview and show attach label on open
+      if(attachInput) attachInput.disabled = false;
+      if(lbl){ lbl.classList.remove('muted'); lbl.style.pointerEvents='auto'; lbl.title='Attach Media'; }
       const prev = document.getElementById('attachPreview');
       if(prev) prev.style.display = 'none';
       if(lbl) lbl.style.display = 'inline-flex';
@@ -1110,7 +1174,6 @@ startRequestsListeners(currentUser.uid);
       let imageUrl = null, videoUrl = null;
       const mediaFile = attachInput && attachInput.files && attachInput.files[0];
       if(mediaFile){
-        if(!isSubscriber) return showToast('Subscribe to attach media');
         const isVideo = (mediaFile.type||'').startsWith('video/');
         const isImage = (mediaFile.type||'').startsWith('image/');
         if(isImage){
@@ -1141,7 +1204,7 @@ startRequestsListeners(currentUser.uid);
         text, lat, lon,
         createdAt: firebase.firestore.FieldValue.serverTimestamp(),
         authorId: currentUser.uid,
-        authorIsSubscriber: !!isSubscriber,
+        authorIsSubscriber: false,
         likes:0, dislikes:0, flags:0, status:'live',
         visibility,
         imageUrl: imageUrl || null,
@@ -1149,6 +1212,7 @@ startRequestsListeners(currentUser.uid);
         mentions: storedMentions,
         videoUrl: videoUrl || null
       });
+      try{ await usersRef.doc(currentUser.uid).collection('ledger').add({ ts: firebase.firestore.FieldValue.serverTimestamp(), type:'award', amount:0, reason:'post' }); }catch(_){ }
       // Award ping PPs and possibly streak bonus (first ping of day)
       try{
         await awardPoints(currentUser.uid, 5, 'ping');
@@ -1156,7 +1220,7 @@ startRequestsListeners(currentUser.uid);
       }catch(_){ }
       await usersRef.doc(currentUser.uid).set({ lastPingAt: firebase.firestore.FieldValue.serverTimestamp() }, { merge:true });
 
-      const temp = { id:ref.id, text, lat, lon, createdAt:{toDate:()=>new Date()}, authorId:currentUser.uid, authorIsSubscriber:!!isSubscriber, likes:0, dislikes:0, flags:0, status:'live', visibility, imageUrl, videoUrl, firstNetAt:{} };
+      const temp = { id:ref.id, text, lat, lon, createdAt:{toDate:()=>new Date()}, authorId:currentUser.uid, authorIsSubscriber:false, likes:0, dislikes:0, flags:0, status:'live', visibility, imageUrl, videoUrl, firstNetAt:{} };
       lastPingCache.set(ref.id,temp); upsertMarker(temp);
 
       closeModal('createModal'); $('#pingText').value=''; $('#lat').value=''; $('#lon').value=''; if(attachInput) attachInput.value='';
@@ -1204,8 +1268,7 @@ startRequestsListeners(currentUser.uid);
           const name = you ? 'You' : displayBase;
           const pts = Number(u.points||0);
           const streak = Number(u.streakDays||0);
-          const isSub = !!u.isSubscriber;
-          if(authorNameLine){ authorNameLine.innerHTML = isSub ? `${name} <span title="Subscriber" style="margin-left:6px;font-weight:900;color:#c01631;background:#fff;border:1px solid #e6e6e6;padding:0 6px;border-radius:999px">M</span>` : name; }
+          if(authorNameLine){ authorNameLine.textContent = name; }
           if(authorStatsLine){ authorStatsLine.textContent = `${pts} PPs • 🔥 ${streak}`; }
           if(authorAvatar){ if(u.photoURL){ authorAvatar.style.backgroundImage=`url("${u.photoURL}")`; authorAvatar.classList.add('custom-avatar'); } else { authorAvatar.style.backgroundImage=''; authorAvatar.classList.remove('custom-avatar'); } }
           if(authorRow){ authorRow.onclick = ()=> openOtherProfile(uid); }
@@ -1549,12 +1612,26 @@ startRequestsListeners(currentUser.uid);
       const nm=document.createElement('div'); nm.className='nm'; nm.textContent = it.label;
       row.appendChild(av); row.appendChild(nm);
       row.onclick = ()=>{ try{
-        const el = pingTextInput; if(!el) return; const val = el.value; const at = val.lastIndexOf('@'); if(at>=0){ el.value = val.slice(0,at) + it.insert + ' '; el.focus(); const ev=new Event('input'); el.dispatchEvent(ev); } hideMentionSuggest(); }catch(_){ }
-      };
+        let el = null;
+        if(mentionTarget){
+          if(mentionTarget.type==='comment') el = commentInput;
+          else if(mentionTarget.type==='addfriend') el = addFriendInputProfile;
+          else if(mentionTarget.type==='gift') el = document.getElementById('giftWho');
+          else el = pingTextInput;
+        } else {
+          el = pingTextInput;
+        }
+        if(!el) return; const val = el.value; const at = val.lastIndexOf('@'); if(at>=0){ el.value = val.slice(0,at) + it.insert + ' '; el.focus(); const ev=new Event('input'); el.dispatchEvent(ev); }
+        hideMentionSuggest();
+      }catch(_){ } };
       mentionSuggest.appendChild(row);
     });
+    // Prefer positioning above the input to save space on small screens
+    const spaceBelow = window.innerHeight - rect.bottom;
+    const popH = Math.min(220, Math.max(140, items.length*32 + 12));
+    const showAbove = spaceBelow < popH + 16 && rect.top > popH + 16;
     mentionSuggest.style.left = Math.max(8, rect.left) + 'px';
-    mentionSuggest.style.top  = (rect.bottom + 6) + 'px';
+    mentionSuggest.style.top  = showAbove ? (rect.top - popH - 6) + 'px' : (rect.bottom + 6) + 'px';
     mentionSuggest.style.display='block';
   }
 
@@ -1585,19 +1662,35 @@ startRequestsListeners(currentUser.uid);
     return cleaned.slice(0,10);
   }
 
-  let mentionSuggestReq = 0;
+  let mentionSuggestReq = 0; let mentionTarget = null; // {type:'ping'|'comment'}
   if(pingTextInput){
     pingTextInput.addEventListener('input', async ()=>{
       const req = ++mentionSuggestReq;
       try{
         const val = pingTextInput.value||''; const at = val.lastIndexOf('@'); if(at<0){ hideMentionSuggest(); return; }
         const prefix = val.slice(at+1).toLowerCase().replace(/[^a-z0-9_.]/g,'');
+        mentionTarget={type:'ping'};
         if(prefix.length===0){ if(req===mentionSuggestReq) showMentionSuggest([{ label:'@friends', insert:'@friends', photoURL:'' }], pingTextInput); return; }
         const items = await buildMentionCandidates(prefix);
         if(req===mentionSuggestReq) showMentionSuggest(items, pingTextInput);
       }catch(_){ }
     });
     document.addEventListener('click', (e)=>{ if(!mentionSuggest) return; if(e.target===mentionSuggest || mentionSuggest.contains(e.target)) return; hideMentionSuggest(); });
+  }
+
+  // Comment @-suggest (reuse existing commentInput declared earlier)
+  if(commentInput){
+    commentInput.addEventListener('input', async ()=>{
+      const req = ++mentionSuggestReq;
+      try{
+        const val = commentInput.value||''; const at = val.lastIndexOf('@'); if(at<0){ hideMentionSuggest(); return; }
+        const prefix = val.slice(at+1).toLowerCase().replace(/[^a-z0-9_.]/g,'');
+        mentionTarget={type:'comment'};
+        if(prefix.length===0){ if(req===mentionSuggestReq) showMentionSuggest([{ label:'@friends', insert:'@friends', photoURL:'' }], commentInput); return; }
+        const items = await buildMentionCandidates(prefix);
+        if(req===mentionSuggestReq) showMentionSuggest(items, commentInput);
+      }catch(_){ }
+    });
   }
 
   // Reverted: remove Add Friend suggestions
@@ -1641,14 +1734,15 @@ startRequestsListeners(currentUser.uid);
         const sent = snap.exists ? Number(snap.data().sent||0) : 0;
         const budget = Math.max(0, 50 - sent);
         const sendList = targetUids.slice(0, budget);
-        // Write notifications for sendList
+        // Read all first, then perform writes to satisfy Firestore transaction rules
+        const pending = [];
         for(const uid of sendList){
-          try{
-            const nref = usersRef.doc(uid).collection('notifications').doc(kind+'_'+pingId+(commentId?('_'+commentId):''));
-            const nsnap = await tx.get(nref); if(!nsnap.exists){ tx.set(nref, { type:kind, from: currentUser.uid, pingId, commentId: commentId||null, createdAt: firebase.firestore.FieldValue.serverTimestamp() }); }
-          }catch(_){ }
+          const nref = usersRef.doc(uid).collection('notifications').doc(kind+'_'+pingId+(commentId?('_'+commentId):''));
+          const nsnap = await tx.get(nref);
+          if(!nsnap.exists){ pending.push(nref); }
         }
-        tx.set(qref, { sent: sent + sendList.length, updatedAt: firebase.firestore.FieldValue.serverTimestamp() }, { merge:true });
+        pending.forEach(nref=>{ tx.set(nref, { type:kind, from: currentUser.uid, pingId, commentId: commentId||null, createdAt: firebase.firestore.FieldValue.serverTimestamp() }); });
+        tx.set(qref, { sent: sent + pending.length, updatedAt: firebase.firestore.FieldValue.serverTimestamp() }, { merge:true });
       });
     }catch(_){ }
   }
@@ -1876,6 +1970,33 @@ startRequestsListeners(currentUser.uid);
         if(addFriendInputProfile) addFriendInputProfile.value=''; showToast('Friend request sent'); await updateRequestsUI();
       }catch(e){ console.error(e); showToast('Could not send request'); }
     };
+  // Autosuggest for Add Friend (friends-only)
+  if(addFriendInputProfile){
+    addFriendInputProfile.addEventListener('input', async ()=>{
+      try{
+        const val=(addFriendInputProfile.value||'').toLowerCase().replace(/[^a-z0-9_.]/g,'');
+        if(!val){ hideMentionSuggest(); return; }
+        // Search both friends and global handles by prefix
+        const items=[];
+        try{
+          const q = await db.collection('handles')
+            .where(firebase.firestore.FieldPath.documentId(), '>=', val)
+            .where(firebase.firestore.FieldPath.documentId(), '<=', val+'\uf8ff')
+            .limit(10)
+            .get();
+          q.forEach(d=>{ const h=d.id; if(!h) return; items.push({ label:'@'+h, insert:'@'+h, photoURL:'' }); });
+        }catch(_){ }
+        // De-dupe and include top friends first
+        try{
+          const ids = myFriends ? Array.from(myFriends).slice(0,50) : [];
+          const snaps = await Promise.all(ids.map(id=> usersRef.doc(id).get().catch(()=>null)));
+          snaps.forEach(s=>{ if(!s||!s.exists) return; const u=s.data(); const h=u&&u.handle? String(u.handle).trim().toLowerCase():''; if(h && h.startsWith(val)){ if(!items.find(it=>it.insert==='@'+h)) items.unshift({ label:'@'+h, insert:'@'+h, photoURL:u.photoURL||'' }); } });
+        }catch(_){ }
+        // Limit and show
+        showMentionSuggest(items.slice(0,10), addFriendInputProfile);
+        mentionTarget={type:'addfriend'};
+      }catch(_){ }
+    });
   }
 
   // Profile modal elements and behaviors
@@ -2021,7 +2142,72 @@ startRequestsListeners(currentUser.uid);
     }catch(_){ }
     }
     if(e.target.id === 'backToProfile') openOwnProfile();
+    if(e.target.id === 'openGift'){ openModal('giftModal'); }
   });
+
+  // Ledger button
+  const ledgerBtn = document.getElementById('ledgerBtn');
+  if(ledgerBtn){ ledgerBtn.onclick = async ()=>{ try{ if(!currentUser) return showToast('Sign in to view'); openModal('ledgerModal'); await renderLedger(); }catch(_){ } }; }
+  const closeLedger = document.getElementById('closeLedger'); if(closeLedger){ closeLedger.onclick = ()=> closeModal('ledgerModal'); }
+  const closeGift = document.getElementById('closeGift'); if(closeGift){ closeGift.onclick = ()=> closeModal('giftModal'); }
+  const sendGift = document.getElementById('sendGift');
+  if(sendGift){ sendGift.onclick = async ()=>{
+    try{
+      if(!currentUser) return showToast('Sign in first','error');
+      const who=(document.getElementById('giftWho').value||'').trim().toLowerCase();
+      const amt=Number(document.getElementById('giftAmt').value||'0');
+      if(!who || !Number.isFinite(amt) || amt<=0) return showToast('Enter friend and amount','warning');
+      const targetUid = await resolveUserByHandleOrEmail(who);
+      if(!targetUid) return showToast('No such user','error');
+      if(targetUid===currentUser.uid) return showToast('You cannot gift yourself','warning');
+      if(!myFriends || !myFriends.has(targetUid)) return showToast('Only gift to friends','warning');
+      await db.runTransaction(async tx=>{
+        const fromRef=usersRef.doc(currentUser.uid); const toRef=usersRef.doc(targetUid);
+        const [fromSnap,toSnap]=await Promise.all([tx.get(fromRef), tx.get(toRef)]);
+        const fromPts = Math.max(0, Number(fromSnap.exists? fromSnap.data().points||0 : 0));
+        if(fromPts < amt) throw new Error('insufficient');
+        tx.set(fromRef, { points: fromPts - amt }, { merge:true });
+        const toPts = Math.max(0, Number(toSnap.exists? toSnap.data().points||0 : 0));
+        tx.set(toRef, { points: toPts + amt }, { merge:true });
+        // Ledger entries
+        const now=firebase.firestore.FieldValue.serverTimestamp();
+        tx.set(fromRef.collection('ledger').doc(), { ts:now, type:'gift_out', amount:amt, to:targetUid });
+        tx.set(toRef.collection('ledger').doc(), { ts:now, type:'gift_in', amount:amt, from:currentUser.uid });
+      });
+      showToast(`Gifted ${amt} PPs`,'success');
+      closeModal('giftModal');
+    }catch(e){ if(String(e&&e.message||'').includes('insufficient')) showToast('Not enough PPs','error'); else { console.error(e); showToast('Gift failed','error'); } }
+  }; }
+
+  // Autosuggest for Gift PPs friend input (friends-only)
+  const giftWho = document.getElementById('giftWho');
+  if(giftWho){
+    giftWho.addEventListener('input', async ()=>{
+      try{
+        const val=(giftWho.value||'').toLowerCase().replace(/[^a-z0-9_.]/g,'');
+        if(!val){ hideMentionSuggest(); return; }
+        const ids = myFriends ? Array.from(myFriends).slice(0,100) : [];
+        const snaps = await Promise.all(ids.map(id=> usersRef.doc(id).get().catch(()=>null)));
+        const items=[]; snaps.forEach(s=>{ if(!s||!s.exists) return; const u=s.data(); const h=u&&u.handle? String(u.handle).trim().toLowerCase():''; if(h && h.startsWith(val)) items.push({ label:'@'+h, insert:h, photoURL:u.photoURL||'' }); });
+        showMentionSuggest(items, giftWho); mentionTarget={type:'gift'};
+      }catch(_){ }
+    });
+  }
+
+  async function renderLedger(){
+    try{
+      const el=document.getElementById('ledgerContent'); if(!el) return;
+      el.innerHTML='<div class="muted">Loading…</div>';
+      const qs = await usersRef.doc(currentUser.uid).collection('ledger').orderBy('ts','desc').limit(100).get();
+      if(qs.empty){ el.innerHTML='<div class="muted">No activity</div>'; return; }
+      const frag=document.createDocumentFragment();
+      // Group by day for neatness
+      const groups=new Map();
+      qs.forEach(doc=>{ const d=doc.data(); const dt=d.ts&&d.ts.toDate? d.ts.toDate():new Date(); const key=dt.getFullYear()+'-'+String(dt.getMonth()+1).padStart(2,'0')+'-'+String(dt.getDate()).padStart(2,'0'); if(!groups.has(key)) groups.set(key, []); groups.get(key).push({dt,d}); });
+      for(const [day,items] of groups){ const h=document.createElement('div'); h.style.fontWeight='900'; h.style.marginTop='6px'; h.textContent=day; frag.appendChild(h); let net=0; items.forEach(({d,dt})=>{ const row=document.createElement('div'); row.className='req-card'; let line=''; if(d.type==='gift_in'){ net+=Number(d.amount||0); line=`+${d.amount} from ${d.from}`; } else if(d.type==='gift_out'){ net-=Number(d.amount||0); line=`-${d.amount} to ${d.to}`; } else if(d.type==='unlock_ping'){ net-=Number(d.amount||0); line=`-${d.amount} unlock ${d.tier}`; } else if(d.type==='award'){ net+=Number(d.amount||0); line=`+${d.amount} ${d.reason||''}`; } else { line=`${d.type||'activity'} ${d.amount||''}`; } row.textContent=`${line}`; frag.appendChild(row); }); const sum=document.createElement('div'); sum.className='muted'; sum.textContent=`Net: ${net>0?'+':''}${net} PPs`; frag.appendChild(sum); }
+      el.innerHTML=''; el.appendChild(frag);
+    }catch(_){ }
+  }
 
   if(saveHandle){
     saveHandle.onclick = async ()=>{
@@ -2036,13 +2222,16 @@ startRequestsListeners(currentUser.uid);
         const hRef = db.collection('handles').doc(raw);
         const exists = await hRef.get();
         if(exists.exists && exists.data() && exists.data().uid !== currentUser.uid){ showToast('Name taken'); return; }
-        // Move previous handle if any (skip if unchanged)
-        const uref = usersRef.doc(currentUser.uid); const ud = await uref.get(); const prev = ud.exists? (ud.data().handle||null) : null;
+        // Cooldown: 7 days between changes (initial set exempt)
+        const uref = usersRef.doc(currentUser.uid); const ud = await uref.get(); const prev = ud.exists? (ud.data().handle||null) : null; const lastAt = ud.exists? (ud.data().lastHandleChangeAt && ud.data().lastHandleChangeAt.toDate ? ud.data().lastHandleChangeAt.toDate().getTime() : 0) : 0;
+        if(prev && prev !== raw && lastAt){ const diff = Date.now() - lastAt; const seven=7*24*3600*1000; if(diff < seven){ const left=seven-diff; const days=Math.ceil(left/(24*3600*1000)); showToast(`Change allowed in ~${days} day(s)`,'warning'); return; } }
         if(prev === raw){ await refreshAuthUI(currentUser); showToast('Username saved'); return; }
         await db.runTransaction(async tx=>{
           if(prev && prev !== raw){ tx.delete(db.collection('handles').doc(prev)); }
-          tx.set(hRef, { uid: currentUser.uid, updatedAt: firebase.firestore.FieldValue.serverTimestamp() });
-          tx.set(uref, { handle: raw, handleLC: raw }, { merge:true });
+          const now=firebase.firestore.FieldValue.serverTimestamp();
+          tx.set(hRef, { uid: currentUser.uid, updatedAt: now });
+          tx.set(uref, { handle: raw, handleLC: raw, lastHandleChangeAt: now }, { merge:true });
+          tx.set(uref.collection('ledger').doc(), { ts: now, type:'award', amount:0, reason:'handle_change' });
         });
         await refreshAuthUI(currentUser);
         showToast('Username updated');
@@ -2113,6 +2302,48 @@ startRequestsListeners(currentUser.uid);
   if(settingsImageInput){
     settingsImageInput.onchange = ()=>{ const f=settingsImageInput.files&&settingsImageInput.files[0]; if(!f) return; if(f.size>10*1024*1024) return showToast('Image must be ≤ 10MB'); openCropperWith(f); };
   }
+  // Custom Ping UI setup
+  const customPingOptions = document.getElementById('customPingOptions');
+  const customPingInput = document.getElementById('customPingInput');
+  const TIERS=[{tier:0,label:'Default',price:0},{tier:100,label:'Purple',price:100},{tier:200,label:'Alien',price:200},{tier:300,label:'Galactic',price:300},{tier:500,label:'Nuke',price:500},{tier:1000,label:'Custom Image',price:1000}];
+  async function renderCustomPingUI(){
+    try{
+      if(!customPingOptions || !currentUser) return;
+      const snap=await usersRef.doc(currentUser.uid).get(); const u=snap.exists? snap.data():{};
+      const owned=u.ownedPings||{}; const sel=Number(u.selectedPingTier||0);
+      customPingOptions.innerHTML=''; customPingOptions.classList.add('ping-grid');
+      TIERS.forEach(t=>{
+        const row=document.createElement('div'); row.className='ping-card';
+        const ownedFlag = !!owned[t.tier] || t.tier===0;
+        const price = t.price;
+        const preview=document.createElement('div'); preview.className='pin-preview';
+        let svg = balloonSVG(t.tier===0? '#16a34a' : (t.tier===100?'#7c3aed': t.tier===200?'#0ea5e9': t.tier===300?'#0f172a': t.tier===500?'#fde047':'#e5e7eb'), 18, { variant: t.tier===200?'alien': t.tier===300?'galactic': t.tier===500?'nuke': null });
+        if(t.tier===1000){ svg = balloonSVG('#e5e7eb',16,{ image:null }); }
+        preview.innerHTML=svg.html;
+        const label=document.createElement('div'); label.textContent = `${t.label}${price?` — ${price} PPs`:''}`; label.style.flex='1';
+        const btn=document.createElement('button'); btn.className='btn'; btn.textContent = ownedFlag? (sel===t.tier?'Selected':'Select') : 'Unlock';
+        if(!ownedFlag && t.tier!==0){ btn.onclick = async ()=>{
+          try{
+            await db.runTransaction(async tx=>{
+              const ref=usersRef.doc(currentUser.uid); const s=await tx.get(ref); const prev=s.exists? Number(s.data().points||0):0; if(prev < price) throw new Error('insufficient');
+              const now=firebase.firestore.FieldValue.serverTimestamp();
+              const ownedNext=Object.assign({}, s.exists? (s.data().ownedPings||{}):{}); ownedNext[t.tier]=true;
+              tx.set(ref,{ points: prev-price, ownedPings: ownedNext, selectedPingTier:t.tier },{merge:true});
+              tx.set(ref.collection('ledger').doc(), { ts:now, type:'unlock_ping', amount:price, tier:t.tier });
+            });
+            showToast('Unlocked','success');
+            renderCustomPingUI();
+          }catch(e){ if(String(e&&e.message||'').includes('insufficient')) showToast('Not enough PPs','error'); else { console.error(e); showToast('Unlock failed','error'); } }
+        }; } else {
+          btn.onclick = async ()=>{ try{ await usersRef.doc(currentUser.uid).set({ selectedPingTier:t.tier }, { merge:true }); showToast('Selected','success'); renderCustomPingUI(); try{ userDocCache.delete(currentUser.uid); }catch(_){ } try{ restyleMarkers(); }catch(_){ } }catch(_){ showToast('Select failed','error'); } };
+        }
+        row.appendChild(preview); row.appendChild(label); row.appendChild(btn);
+        const lock=document.createElement('div'); lock.className='lock'; lock.textContent = ownedFlag? '' : '🔒'; row.appendChild(lock);
+        if(!ownedFlag && t.tier===1000){ const up=document.createElement('label'); up.className='btn'; up.textContent='Upload'; up.htmlFor='customPingInput'; row.appendChild(up); }
+        customPingOptions.appendChild(row);
+      });
+    }catch(_){ }
+  }
   if(closeCrop){ closeCrop.onclick = ()=> closeModal('cropModal'); }
   if(cropZoom){ cropZoom.oninput = (e)=>{ cropState.scale = Number(e.target.value||'1'); renderCropTransform(); }; }
   // Basic drag to pan
@@ -2123,6 +2354,32 @@ startRequestsListeners(currentUser.uid);
     el.addEventListener('pointercancel', ()=>{ cropState.dragging=false; });
   }
   if(cropImage){ addDrag(cropImage); }
+
+  // Initialize custom ping UI when opening settings
+  document.addEventListener('click', (e)=>{
+    if(e.target && e.target.id==='openSettings'){
+      setTimeout(()=>{ try{ renderCustomPingUI(); }catch(_){ } }, 0);
+    }
+  });
+
+  // Handle custom ping image upload (1000-tier)
+  if(customPingInput){
+    customPingInput.onchange = ()=>{
+      try{
+        const f=customPingInput.files && customPingInput.files[0]; if(!f) return; if(f.size>5*1024*1024) return showToast('Image must be ≤ 5MB','warning');
+        // Reuse avatar cropper to capture square then save as custom ping image
+        openCropperWith(f);
+        // On save, also store as customPingUrl if user owns 1000-tier
+        const orig=saveCroppedAvatar.onclick; saveCroppedAvatar.onclick = async ()=>{
+          try{
+            await orig.call(saveCroppedAvatar);
+            if(!currentUser) return; const u=await usersRef.doc(currentUser.uid).get(); const owned=(u.exists? u.data().ownedPings||{}:{});
+            if(owned[1000]){ const url = (await usersRef.doc(currentUser.uid).get()).data().photoURL; await usersRef.doc(currentUser.uid).set({ customPingUrl:url }, { merge:true }); showToast('Custom ping image set','success'); }
+          }catch(_){ }
+        };
+      }catch(_){ }
+    };
+  }
 
   if(saveCroppedAvatar){
     saveCroppedAvatar.onclick = async ()=>{
@@ -2267,13 +2524,18 @@ startRequestsListeners(currentUser.uid);
     const friendList = document.getElementById('profileFriendsList');
     const myCodeEl = document.getElementById('myCodeEl');
     if(!friendList){ return; }
+    // Clean up any legacy inline Gift PPs UI accidentally added inside the Friends section
+    try{
+      const parent = friendList.parentElement;
+      if(parent){ parent.querySelectorAll('#giftTarget, #giftAmount, #giftBtn').forEach(el=>{ const sec=el.closest('.section'); if(sec && sec!==parent) sec.remove(); }); }
+    }catch(_){ }
     if(!currentUser){ friendList.innerHTML='<div class="muted">Sign in to manage friends.</div>'; return; }
-    const doc=await usersRef.doc(currentUser.uid).get(); const data=doc.exists? doc.data():{friendIds:[], isSubscriber:false};
+    const doc=await usersRef.doc(currentUser.uid).get(); const data=doc.exists? doc.data():{friendIds:[]};
     // Dedup and normalize friend list
     const originalIds = (data.friendIds||[]).filter(Boolean);
     const uniqueIds = Array.from(new Set(originalIds));
     if(uniqueIds.length !== originalIds.length){ try{ await usersRef.doc(currentUser.uid).set({ friendIds: uniqueIds }, { merge:true }); }catch(_){ } }
-    myFriends=new Set(uniqueIds); if(myCodeEl) myCodeEl.value=currentUser.uid; isSubscriber = !!data.isSubscriber;
+    myFriends=new Set(uniqueIds); if(myCodeEl) myCodeEl.value=currentUser.uid;
     const token = ++friendsRenderToken;
     friendList.innerHTML='';
     if(!uniqueIds.length){ friendList.innerHTML='<div class="muted">No friends yet. Share your code above.</div>'; reFilterMarkers(); return; }
@@ -2379,7 +2641,6 @@ startRequestsListeners(currentUser.uid);
   }
 
   /* --------- Ping of the Week --------- */
-  let currentPotw = null; // { id, text, net, likes, dislikes, imageUrl, lat, lon, authorId, authorName }
 
   const potwCard = $('#potwCard');
   const potwImg  = $('#potwImg');
@@ -2480,7 +2741,7 @@ startRequestsListeners(currentUser.uid);
     try{
       const d = await usersRef.doc(uid).get();
       return d.exists ? (d.data().displayName || 'Anon') : 'Anon';
-    }catch{ return 'Anon'; }
+    }catch(e){ return 'Anon'; }
   }
 
   // Compare two pings for PotW using net likes, then "first to reach N" milestones (firstNetAt)
@@ -2541,7 +2802,7 @@ startRequestsListeners(currentUser.uid);
   try{
     const net = top ? Math.max(0,(top.likes||0)-(top.dislikes||0)) : null;
     console.log('[PotW]', {eligible, winner: top?.id || '(none)', net});
-  }catch{}
+  }catch(e){}
 
   if(prev !== (currentPotw ? currentPotw.id : null)){
     // Notify PotW winner when a new winner is set
@@ -2640,11 +2901,7 @@ startRequestsListeners(currentUser.uid);
   setInterval(()=>{ recomputePotw().catch(console.error); }, 15*1000);
 
   /* --------- Ensure buttons are enabled on load ---------- */
-  setTimeout(() => {
-    applyModalOpenClass();
-  }, 100);
-
-  /* --------- Friends toggle initial ---------- */
-  const toast = (m)=>showToast(m);
-});
+  setTimeout(function(){ try { applyModalOpenClass(); } catch(e) {} }, 100);
+}
+})();
 
