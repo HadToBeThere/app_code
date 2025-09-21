@@ -96,7 +96,7 @@ html,body,#app{height:100%;margin:0;font-family:ui-rounded,system-ui,-apple-syst
 }
 .profile-avatar.large{width:64px;height:64px}
 .profile-avatar.small{width:32px;height:32px}
-.profile-name{font-size:12px;font-weight:800;background:#fff;border:1px solid #e6e6e6;padding:2px 6px;border-radius:999px;box-shadow:0 6px 18px rgba(0,0,0,.1)}
+.profile-name{font-size:12px;font-weight:800;background:#fff;border:1px solid #e6e6e6;padding:2px 6px;border-radius:999px;box-shadow:0 6px 18px rgba(0,0,0,.1);pointer-events:auto}
 .profile-name::before{content:''}
 
 /* Keep top-right controls always visible and clickable */
@@ -185,6 +185,9 @@ textarea,input[type=text],input[type=password],input[type=email],input[type=file
   -webkit-mask:
     radial-gradient(200vmax 200vmax at 50% 50%, rgba(0,0,0,1), rgba(0,0,0,1))
     , url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><path d="M50 10c17 0 30 13 30 30 0 22-30 50-30 50S20 62 20 40c0-17 13-30 30-30z" fill="black"/></svg>') center/70% 70% no-repeat;
+  mask:
+    radial-gradient(200vmax 200vmax at 50% 50%, rgba(0,0,0,1), rgba(0,0,0,1))
+    , url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><path d="M50 10c17 0 30 13 30 30 0 22-30 50-30 50S20 62 20 40c0-17 13-30 30-30z" fill="black"/></svg>') center/70% 70% no-repeat;
   -webkit-mask-composite: destination-out;
   mask-composite: exclude;
 }
@@ -194,6 +197,9 @@ textarea,input[type=text],input[type=password],input[type=email],input[type=file
   position:absolute;left:0;top:0;right:0;bottom:0;pointer-events:none;
   background: rgba(0,0,0,.35);
   -webkit-mask:
+    radial-gradient(200vmax 200vmax at 50% 50%, rgba(0,0,0,1), rgba(0,0,0,1))
+    , url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><path d="M50 10c17 0 30 13 30 30 0 22-30 50-30 50S20 62 20 40c0-17 13-30 30-30z" fill="black"/></svg>') center/70% 70% no-repeat;
+  mask:
     radial-gradient(200vmax 200vmax at 50% 50%, rgba(0,0,0,1), rgba(0,0,0,1))
     , url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><path d="M50 10c17 0 30 13 30 30 0 22-30 50-30 50S20 62 20 40c0-17 13-30 30-30z" fill="black"/></svg>') center/70% 70% no-repeat;
   -webkit-mask-composite: destination-out;
@@ -288,3 +294,4 @@ textarea,input[type=text],input[type=password],input[type=email],input[type=file
 .ping-card .action{margin-left:auto}
 @media (max-width: 520px){
   .ping-grid{grid-template-columns:1fr}
+}
