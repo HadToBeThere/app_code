@@ -68,11 +68,11 @@
     <!-- Top center tray -->
     <div class="tray">
       <span class="pill" id="quotaText">0/3 pings today</span>
-      <button class="pill" id="subscribeBtn" title="Subscribe (shows M badge)">M</button>
     </div>
 
-    <!-- Right: notifications & profile -->
+    <!-- Right: notifications, ledger & profile -->
     <button class="bell" id="bellBtn">🔔 <span class="badge" id="notifBadge" style="display:none">0</span></button>
+    <button class="bell" id="ledgerBtn" title="PP activity log">🧾</button>
 
     <!-- Top-right Sign in (visible when signed out) -->
     <button class="signin-top" id="signInTop">Sign in</button>
@@ -90,7 +90,7 @@
     <div class="legend">
       <strong>Had to Be There</strong><br/>
       Drop a ping inside the circle. No names, no harassment. Posts vanish after 24h.<br/>
-      Yours = green; friends = orange; others = blue; subscribers show as white “M” if not your friend.
+      Yours = green; friends = orange; others = blue.
     </div>
 
     <!-- Ping of the Week card -->
@@ -162,21 +162,7 @@
       </div>
     </div>
 
-    <!-- Subscribe Modal -->
-    <div class="modal" id="subscribeModal" aria-modal="true" role="dialog">
-      <div class="card">
-        <header>
-          <span>Subscribe</span>
-          <button class="btn" id="closeSub">Close</button>
-        </header>
-        <div class="content">
-          <p>Subscribers get a subtle white “M” badge when seen by non-friends. No extra privileges beyond the badge.</p>
-        </div>
-        <div class="actions">
-          <button class="btn primary" id="confirmSub">Subscribe</button>
-        </div>
-      </div>
-    </div>
+    
 
     <!-- Ping Sheet (details) -->
     <div class="sheet" id="pingSheet" role="dialog" aria-modal="true">
@@ -239,6 +225,7 @@
           <div style="display:flex; gap:8px; align-items:center">
             <button class="btn icon-btn" id="backToProfile" style="display:none">←</button>
             <button class="btn icon-btn" id="openSettings" title="Settings" style="display:none">⚙︎</button>
+            <button class="btn" id="openGift">Gift PPs</button>
             <button class="btn" id="closeProfile">Close</button>
           </div>
         </header>
@@ -282,7 +269,6 @@
           </div>
           <div id="settingsSection" style="display:none">
             <div class="section">
-              <div><strong>Change profile picture</strong></div>
               <div class="row" style="gap:.5rem; margin-top:6px; align-items:center">
                 <div class="profile-avatar large" id="settingsProfileAvatar" style="width:48px;height:48px;"></div>
                 <label class="btn" for="settingsImageInput">Change profile pic</label>
@@ -295,6 +281,11 @@
                 <input id="handleInput" type="text" placeholder="username" />
                 <button class="btn" id="saveHandle">Save username</button>
               </div>
+            </div>
+            <div class="section" id="customPingSection" style="margin-top:12px">
+              <div><strong>Custom Ping</strong></div>
+              <div id="customPingOptions" class="row" style="flex-direction:column; gap:8px; margin-top:8px"></div>
+              <input id="customPingInput" type="file" accept="image/*" style="position:fixed;left:-9999px;top:0;opacity:0" />
             </div>
           </div>
         </div>
@@ -350,6 +341,36 @@
         <div class="actions">
           <button class="btn primary" id="saveCroppedAvatar">Save</button>
         </div>
+      </div>
+    </div>
+
+    <!-- Gift Modal -->
+    <div class="modal" id="giftModal" aria-modal="true" role="dialog">
+      <div class="card">
+        <header>
+          <span>Gift PPs</span>
+          <button class="btn" id="closeGift">Close</button>
+        </header>
+        <div class="content">
+          <div class="row" style="gap:.5rem; align-items:center">
+            <input id="giftWho" type="text" placeholder="@username or email" />
+            <input id="giftAmt" type="number" placeholder="Amount" min="1" step="1" style="width:140px" />
+          </div>
+        </div>
+        <div class="actions">
+          <button class="btn primary" id="sendGift">Gift</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Ledger Modal -->
+    <div class="modal" id="ledgerModal" aria-modal="true" role="dialog">
+      <div class="card">
+        <header>
+          <span>PP Activity</span>
+          <button class="btn" id="closeLedger">Close</button>
+        </header>
+        <div class="content" id="ledgerContent"><div class="muted">No activity</div></div>
       </div>
     </div>
 
