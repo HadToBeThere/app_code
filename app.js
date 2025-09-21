@@ -160,15 +160,13 @@ async function main(){
       const d = await usersRef.doc(uid).get();
       const u = d.exists ? d.data() : null;
       const h = u && u.handle ? String(u.handle).trim() : '';
-      if(h){
-        const display = `@${h}`;
-        uidHandleCache.set(uid, display);
-        return display;
-      }
-      // Do not cache fallback to avoid masking later real handle
-      return `@user${String(uid).slice(0,6)}`;
+      const display = h ? `@${h}` : `@user${String(uid).slice(0,6)}`;
+      uidHandleCache.set(uid, display);
+      return display;
     }catch(_){
-      return `@user${String(uid).slice(0,6)}`;
+      const fallback = `@user${String(uid).slice(0,6)}`;
+      uidHandleCache.set(uid, fallback);
+      return fallback;
     }
   }
 
@@ -513,7 +511,7 @@ startRequestsListeners(currentUser.uid);
   }
 
   // Re-evaluate PotW after any auth change (filters/me/friends may differ)
-  if(typeof recomputePotw === 'function') recomputePotw().catch(console.error);
+  recomputePotw().catch(console.error);
 }
 
   // Hard UI flip helper (in case listeners/races delay refresh)
@@ -615,16 +613,25 @@ startRequestsListeners(currentUser.uid);
       const user = result.user; if(!user) throw new Error('Google sign-in returned no user');
       const isNew = !!(result.additionalUserInfo && result.additionalUserInfo.isNewUser);
       if(isNew){
-        // Only initialize base fields; do NOT set handle here to avoid accidental resets
+        // Create with default random handle
+        const base = (user.displayName || (user.email ? user.email.split('@')[0] : 'user')).toLowerCase().replace(/[^a-z0-9_.]/g,'');
+        let attempt = (base.slice(0,12) || 'user') + (Math.floor(Math.random()*9000)+1000);
+        let finalHandle = attempt;
         try{
-          await usersRef.doc(user.uid).set({
-            email: user.email || null,
-            createdAt: firebase.firestore.FieldValue.serverTimestamp(),
-            friendIds: [], lastPingAt: null, unreadCount: 0
-          }, { merge:true });
+          for(let i=0;i<30;i++){
+            const doc = await db.collection('handles').doc(finalHandle).get();
+            if(!doc.exists){ break; }
+            finalHandle = (base.slice(0,10) || 'user') + (Math.floor(Math.random()*900000)+100000);
+          }
+          await db.collection('handles').doc(finalHandle).set({ uid:user.uid, createdAt: firebase.firestore.FieldValue.serverTimestamp() });
         }catch(_){ }
-        // Ensure a handle exists if missing
-        await ensureIdentityMappings(user);
+        await usersRef.doc(user.uid).set({
+          email: user.email || null,
+          handle: finalHandle,
+          handleLC: finalHandle.toLowerCase(),
+          createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+          friendIds: [], lastPingAt: null, unreadCount: 0
+        }, { merge:true });
       }else{
         // Do not overwrite custom profile fields on re-login except to backfill missing displayName
         try{
@@ -649,8 +656,7 @@ startRequestsListeners(currentUser.uid);
           const signed = await auth.signInWithCredential(cred);
           const user = signed && signed.user ? signed.user : auth.currentUser;
           if(user){
-            // Do not overwrite existing profile fields like handle on recovery
-            try{ await usersRef.doc(user.uid).set({ email: user.email || null }, { merge:true }); }catch(_){ }
+            await usersRef.doc(user.uid).set({ email: user.email || null, handle: user.handle || null }, { merge:true });
             forceAuthUI(user);
             await refreshAuthUI(user);
             setTimeout(()=>{ try{ forceAuthUI(auth.currentUser); refreshAuthUI(auth.currentUser); }catch(_){ } }, 80);
@@ -1083,7 +1089,7 @@ startRequestsListeners(currentUser.uid);
       upsertMarker(p);
     });
     // 🔑 Ensure PotW is re-evaluated on every live update
-    if(typeof recomputePotw === 'function') recomputePotw().catch(console.error);
+    recomputePotw().catch(console.error);
     // 🔥 Recompute hotspot after snapshot processed
     scheduleHotspotRecompute();
   }, e=>{ console.error(e); showToast((e.code||'error')+': '+(e.message||'live error')); });
