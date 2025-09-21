@@ -72,6 +72,7 @@ html,body,#app{height:100%;margin:0;font-family:ui-rounded,system-ui,-apple-syst
 .seg button.active{background:#111;color:#fff}
 
 .bell{position:fixed;top:12px;right:12px;z-index:2000;background:#fff;border:1px solid #e6e6e6;border-radius:999px;padding:6px 10px;font-weight:900;cursor:pointer;box-shadow:0 6px 18px rgba(0,0,0,.1)}
+.bell#ledgerBtn{right:64px}
 .badge{display:inline-block;min-width:18px;padding:0 6px;height:18px;line-height:18px;border-radius:10px;background:#c01631;color:#fff;font-size:12px;margin-left:6px}
 .signin-top{position:fixed;top:12px;right:64px;z-index:2000;background:#fff;border:1px solid #e6e6e6;border-radius:999px;padding:6px 10px;font-weight:800;cursor:pointer;box-shadow:0 6px 18px rgba(0,0,0,.1)}
 .auth-bar{display:none}
@@ -249,3 +250,9 @@ textarea,input[type=text],input[type=password],input[type=email],input[type=file
 .mention-popover .mi:hover{background:#f3f4f6}
 .mention-popover .mi .av{width:20px;height:20px;border-radius:999px;background:#eee}
 .mention-popover .mi .nm{font-weight:800}
+
+/* Custom Ping grid */
+.ping-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+.ping-card{display:flex;align-items:center;gap:10px;padding:8px;border:1px solid #eee;border-radius:12px}
+.ping-card .pin-preview{width:28px;height:42px;display:flex;align-items:center;justify-content:center}
+.ping-card .lock{margin-left:auto;font-size:12px;color:#6b7280}
