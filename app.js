@@ -342,6 +342,8 @@
           const settings = document.getElementById('settingsSection'); if(settings) settings.style.display='none';
           const actions = document.getElementById('profileActions'); if(actions) actions.style.display='flex';
           const signOutBtn = document.getElementById('signOutInProfile'); if(signOutBtn) signOutBtn.style.display='inline-flex';
+          // Default title
+          const title = document.getElementById('profileModalTitle'); if(title) title.textContent='Your Profile';
         }
       }catch(_){ }
     }
@@ -563,9 +565,15 @@ startRequestsListeners(currentUser.uid);
       e.stopPropagation(); // Prevent map click handler from firing
         const u = auth.currentUser || null;
         if(!u){ openModal('signInModal'); return; }
-        // Open modal immediately; load data after
+        // Open modal and then flip to own profile reliably
         try{ openModal('profileModal'); }catch(_){ }
-        openOwnProfile().catch((e)=>{ console.error('openOwnProfile failed', e); /* keep modal open even if data load fails */ });
+        // Wait until openOwnProfile is defined, then call
+        const spin = setInterval(()=>{
+          if(typeof openOwnProfile === 'function'){
+            clearInterval(spin);
+            try{ openOwnProfile(); }catch(err){ console.error('openOwnProfile failed', err); }
+          }
+        }, 10);
     }
   });
   const signInTopBtn = document.getElementById('signInTop');
@@ -789,10 +797,14 @@ startRequestsListeners(currentUser.uid);
   /* --------- Leftbar contains only Filters now ---------- */
   const leftbar = document.getElementById('leftbar');
 
-  /* --------- Filter (All / Friends+Me / Me) --------- */
+  /* --------- Filter (All / Friends+Me / Me) + Time window --------- */
   let filterMode = 'all'; // 'all' | 'friends' | 'me'
+  let timeWindow = 'any'; // 'any' | '30m' | '2h' | '8h' | '24h'
   $$('#filterSeg button').forEach(btn=>{
     btn.onclick=()=>{ $$('#filterSeg button').forEach(b=>b.classList.remove('active')); btn.classList.add('active'); filterMode=btn.dataset.mode; reFilterMarkers(); };
+  });
+  $$('#timeSeg button').forEach(btn=>{
+    btn.onclick=()=>{ $$('#timeSeg button').forEach(b=>b.classList.remove('active')); btn.classList.add('active'); timeWindow=btn.dataset.time||'any'; reFilterMarkers(); };
   });
 
   /* --------- Pin icons & sizing --------- */
@@ -821,16 +833,104 @@ startRequestsListeners(currentUser.uid);
   function balloonSVG(color, sizePx, opts={}){
     const w=Math.max(18,Math.min(56,Math.round(sizePx))), h=Math.round(w*1.5);
     const stroke='rgba(0,0,0,0.35)';
+    const pinD = `M12 2 C7 2, 4 5.5, 4 10 c0 6, 8 12, 8 12 s8-6, 8-12 c0-4.5-3-8-8-8z`;
+    const uid = Math.random().toString(36).slice(2,8);
     let innerPath = `<path d="M9 6 C7.8 6.4,7 7.5,7 8.6" stroke="rgba(255,255,255,0.6)" stroke-width="1.2" fill="none" stroke-linecap="round"/>`;
     if(opts.variant==='alien'){ innerPath = `<circle cx="12" cy="11" r="4" fill="#a7f3d0"/><ellipse cx="10.5" cy="10" rx="1.6" ry="2.2" fill="#111"/><ellipse cx="13.5" cy="10" rx="1.6" ry="2.2" fill="#111"/>`; }
-    if(opts.variant==='galactic'){ innerPath = `<circle cx="12" cy="11" r="4" fill="#93c5fd"/><circle cx="12" cy="11" r="3" fill="none" stroke="#1d4ed8" stroke-width="1"/><circle cx="15" cy="10" r="1" fill="#f59e0b"/>`; }
-    if(opts.variant==='nuke'){ innerPath = `<path d="M6 11 h12 M12 11 v6 M9 17 h6" stroke="#111" stroke-width="1.2"/>`; }
-    if(opts.image){ innerPath = `<defs><clipPath id="pinClip"><path d=\"M12 2 C7 2, 4 5.5, 4 10 c0 6, 8 12, 8 12 s8-6, 8-12 c0-4.5-3-8-8-8z\"/></clipPath></defs><image href="${opts.image}" x="3" y="2" width="18" height="20" preserveAspectRatio="xMidYMid slice" clip-path="url(#pinClip)"/>`; }
-    const svg=`<svg width="${w}" height="${h}" viewBox="0 0 24 32" xmlns="http://www.w3.org/2000/svg">
-      <defs><filter id="pinShadow" x="-50%" y="-50%" width="200%" height="200%"><feDropShadow dx="0" dy="2" stdDeviation="1.6" flood-color="rgba(0,0,0,0.35)"/></filter></defs>
-      <path d="M12 2 C7 2, 4 5.5, 4 10 c0 6, 8 12, 8 12 s8-6, 8-12 c0-4.5-3-8-8-8z" fill="${color}" stroke="${stroke}" stroke-width="1.5" filter="url(#pinShadow)"/>
-      ${innerPath}
-    </svg>`;
+    if(opts.variant==='galactic'){
+      innerPath = `
+        <defs>
+          <radialGradient id="galGlow_${uid}" cx="50%" cy="45%" r="60%">
+            <stop offset="0%" stop-color="#a78bfa"/>
+            <stop offset="60%" stop-color="#1e293b"/>
+            <stop offset="100%" stop-color="#0f172a"/>
+          </radialGradient>
+          <linearGradient id="shoot_${uid}" x1="0%" y1="0%" x2="100%" y2="0%">
+            <stop offset="0%" stop-color="#ffffff"/>
+            <stop offset="100%" stop-color="#60a5fa" stop-opacity="0"/>
+          </linearGradient>
+        </defs>
+        <circle cx="12" cy="11" r="5.8" fill="url(#galGlow_${uid})"/>
+        <circle cx="12" cy="11" r="4.6" fill="none" stroke="#334155" stroke-width="0.8"/>
+        <path d="M6.2 10.6 a6.2 6.2 0 0 1 11.6 0" fill="none" stroke="#64748b" stroke-width="0.8"/>
+        <circle cx="16.4" cy="8.9" r="1.1" fill="#f59e0b"/>
+        <circle cx="8.1" cy="13.3" r="0.9" fill="#e879f9"/>
+        <circle cx="14.2" cy="14.4" r="0.8" fill="#22d3ee"/>
+        <!-- shooting star -->
+        <path d="M7 8.4 L11 9.6" stroke="url(#shoot_${uid})" stroke-width="1.4" stroke-linecap="round"/>
+        <circle cx="11.1" cy="9.6" r="0.9" fill="#ffffff"/>
+        <!-- tiny stars -->
+        <circle cx="10.1" cy="12.1" r="0.4" fill="#93c5fd"/>
+        <circle cx="13.8" cy="10.3" r="0.35" fill="#fde68a"/>
+        <circle cx="9.2" cy="9.7" r="0.3" fill="#f472b6"/>
+      `;
+    }
+    if(opts.variant==='nuke'){
+      innerPath = `
+        <defs>
+          <radialGradient id="nukeGlow_${uid}" cx="50%" cy="50%" r="60%">
+            <stop offset="0%" stop-color="#fff7ad"/>
+            <stop offset="60%" stop-color="#fde047"/>
+            <stop offset="100%" stop-color="#facc15"/>
+          </radialGradient>
+          <radialGradient id="waste_${uid}" cx="50%" cy="50%" r="60%">
+            <stop offset="0%" stop-color="#a3e635"/>
+            <stop offset="100%" stop-color="#16a34a"/>
+          </radialGradient>
+        </defs>
+        <!-- glowing core -->
+        <circle cx="12" cy="11" r="6" fill="url(#nukeGlow_${uid})"/>
+        <!-- radiation trefoil -->
+        <g fill="#111">
+          <path d="M12 11 l0 -3 a3 3 0 0 1 2.6 1.5 L12 11 z"/>
+          <g transform="rotate(120 12 11)"><path d="M12 11 l0 -3 a3 3 0 0 1 2.6 1.5 L12 11 z"/></g>
+          <g transform="rotate(240 12 11)"><path d="M12 11 l0 -3 a3 3 0 0 1 2.6 1.5 L12 11 z"/></g>
+          <circle cx="12" cy="11" r="1.1" fill="#111"/>
+        </g>
+        <!-- hazard arc/top shimmer -->
+        <path d="M7.2 9.2 c1.4-1.1 3.4-1.1 4.8 0 c1.2-1.0 3.2-1.0 4.2 0" fill="none" stroke="#111" stroke-width="1"/>
+        <!-- toxic puddle + bubbles -->
+        <ellipse cx="12" cy="18.6" rx="6.2" ry="2.1" fill="url(#waste_${uid})" stroke="#166534" stroke-width="0.6" opacity="0.95"/>
+        <circle cx="10.0" cy="17.6" r="0.55" fill="#bbf7d0" stroke="#166534" stroke-width="0.3"/>
+        <circle cx="14.1" cy="16.8" r="0.45" fill="#bbf7d0" stroke="#166534" stroke-width="0.3"/>
+        <circle cx="11.6" cy="16.0" r="0.4" fill="#bbf7d0" stroke="#166534" stroke-width="0.3"/>
+        <!-- mini waste barrels -->
+        <g transform="translate(7,14)">
+          <rect x="0" y="1.2" width="4" height="4.2" rx="0.6" fill="#e5e7eb" stroke="#111" stroke-width="0.6"/>
+          <ellipse cx="2" cy="1.2" rx="2" ry="0.8" fill="#e5e7eb" stroke="#111" stroke-width="0.6"/>
+          <g transform="translate(2,3.2) scale(0.45)" fill="#111">
+            <path d="M0 0 l0 -3 a3 3 0 0 1 2.6 1.5 L0 0 z"/>
+            <g transform="rotate(120 0 0)"><path d="M0 0 l0 -3 a3 3 0 0 1 2.6 1.5 L0 0 z"/></g>
+            <g transform="rotate(240 0 0)"><path d="M0 0 l0 -3 a3 3 0 0 1 2.6 1.5 L0 0 z"/></g>
+            <circle cx="0" cy="0" r="0.9"/>
+          </g>
+        </g>
+        <g transform="translate(14,15) scale(0.9)">
+          <rect x="0" y="1.2" width="4" height="4.2" rx="0.6" fill="#e5e7eb" stroke="#111" stroke-width="0.6"/>
+          <ellipse cx="2" cy="1.2" rx="2" ry="0.8" fill="#e5e7eb" stroke="#111" stroke-width="0.6"/>
+        </g>
+      `;
+    }
+    const clipId = `pinClip_${Math.random().toString(36).slice(2,8)}`;
+    let svg;
+    if(opts.image){
+      // Solid, fully-opaque pin: draw a white base under the clipped image, then outline
+      svg = `<svg width="${w}" height="${h}" viewBox="0 0 24 32" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <filter id="pinShadow" x="-50%" y="-50%" width="200%" height="200%"><feDropShadow dx="0" dy="2" stdDeviation="1.6" flood-color="rgba(0,0,0,0.35)"/></filter>
+          <clipPath id="${clipId}"><path d="${pinD}"/></clipPath>
+        </defs>
+        <path d="${pinD}" fill="#ffffff"/>
+        <image href="${opts.image}" x="2" y="1" width="20" height="22" preserveAspectRatio="xMidYMid slice" clip-path="url(#${clipId})"/>
+        <path d="${pinD}" fill="none" stroke="${stroke}" stroke-width="1.5" filter="url(#pinShadow)"/>
+      </svg>`;
+    }else{
+      svg = `<svg width="${w}" height="${h}" viewBox="0 0 24 32" xmlns="http://www.w3.org/2000/svg">
+        <defs><filter id="pinShadow" x="-50%" y="-50%" width="200%" height="200%"><feDropShadow dx="0" dy="2" stdDeviation="1.6" flood-color="rgba(0,0,0,0.35)"/></filter></defs>
+        <path d="${pinD}" fill="${color}" stroke="${stroke}" stroke-width="1.5" filter="url(#pinShadow)"/>
+        ${innerPath}
+      </svg>`;
+    }
     return {html:svg, size:[w,h], anchor:[w/2,h]};
   }
   function mIcon(px){ return L.divIcon({className:'pin-icon', ...balloonSVG('#ffffff', px, {drawM:true})}); }
@@ -883,7 +983,7 @@ startRequestsListeners(currentUser.uid);
         if(style.customTier===200){ variant='alien'; color='#0ea5e9'; }
         if(style.customTier===300){ variant='galactic'; color='#0f172a'; }
         if(style.customTier===500){ variant='nuke'; color='#fde047'; }
-        if(style.customTier===1000 && style.customUrl){ image=style.customUrl; color='#ffffff'; }
+        if(style.customTier===1000 && style.customUrl){ image=style.customUrl; }
         const {html,size,anchor}=balloonSVG(color,px,{variant,image});
         inner = L.divIcon({className:'pin-icon', html, iconSize:size, iconAnchor:anchor});
       } else {
@@ -942,6 +1042,12 @@ startRequestsListeners(currentUser.uid);
     // 24h TTL
     const ts = p.createdAt?.toDate ? p.createdAt.toDate().getTime() : 0;
     if (!ts || Date.now()-ts > LIVE_WINDOW_MS) return false;
+    // Time window filter
+    if(timeWindow && timeWindow!=='any'){
+      const now=Date.now();
+      const limitMs = timeWindow==='30m' ? 30*60*1000 : timeWindow==='2h' ? 2*3600*1000 : timeWindow==='8h' ? 8*3600*1000 : 24*3600*1000;
+      if(now-ts > limitMs) return false;
+    }
     if(!inFence(p)) return false;
     if(p.status==='hidden' || p.status==='deleted') return false;
     // Respect visibility: private pings are visible to author and friends only
@@ -994,6 +1100,49 @@ startRequestsListeners(currentUser.uid);
 
   }
   startLive();
+
+  /* --------- What You Missed (>=12h idle) --------- */
+  const MISSED_LAST_SEEN_KEY = 'htbt_last_seen_ts';
+  const MISSED_THRESHOLD_MS = 12*3600*1000;
+  const missedCard = document.getElementById('missedCard');
+  const missedText = document.getElementById('missedText');
+  const missedMeta = document.getElementById('missedMeta');
+  const missedView = document.getElementById('missedView');
+  const missedClose = document.getElementById('missedClose');
+
+  function markSeen(){ try{ localStorage.setItem(MISSED_LAST_SEEN_KEY, String(Date.now())); }catch(_){ } }
+  function getLastSeen(){ try{ const v=Number(localStorage.getItem(MISSED_LAST_SEEN_KEY)||'0'); return Number.isFinite(v)? v:0; }catch(_){ return 0; } }
+
+  async function showWhatYouMissedIfAny(){
+    try{
+      const lastSeen = getLastSeen();
+      if(!lastSeen) { markSeen(); return; }
+      if(Date.now()-lastSeen < MISSED_THRESHOLD_MS) return;
+      // Collect candidate pings since lastSeen from cache (already live-limited to 24h)
+      const list = [];
+      lastPingCache.forEach((p)=>{
+        const ts=p.createdAt?.toDate? p.createdAt.toDate().getTime():0; if(!ts) return;
+        if(ts<=lastSeen) return;
+        // Respect visibility; reuse shouldShow minus timeWindow constraint
+        const keepTime = timeWindow; timeWindow='any'; const ok=shouldShow(p); timeWindow=keepTime; if(!ok) return;
+        list.push(p);
+      });
+      if(!list.length) { markSeen(); return; }
+      // Sort by net likes desc, then recency
+      list.sort((a,b)=>{ const an=Math.max(0,(a.likes||0)-(a.dislikes||0)); const bn=Math.max(0,(b.likes||0)-(b.dislikes||0)); if(bn!==an) return bn-an; const at=a.createdAt?.toDate? a.createdAt.toDate().getTime():0; const bt=b.createdAt?.toDate? b.createdAt.toDate().getTime():0; return bt-at; });
+      const top = list.slice(0,3);
+      const lines = top.map((p,i)=> `${i+1}. ${String(p.text||'Ping')} (${Math.max(0,(p.likes||0)-(p.dislikes||0))}★)`);
+      if(missedText) missedText.textContent = lines.join('  ');
+      if(missedMeta){ const diff=Math.round((Date.now()-lastSeen)/3600000); missedMeta.textContent = `${diff}h since your last visit`; }
+      if(missedView){ missedView.disabled=false; missedView.onclick=()=>{ try{ if(top[0]){ map.setView([top[0].lat, top[0].lon], 16, { animate:true }); openSheet(top[0].id); } }catch(_){ } if(missedCard) missedCard.style.display='none'; markSeen(); } }
+      if(missedClose){ missedClose.onclick=()=>{ if(missedCard) missedCard.style.display='none'; markSeen(); }; }
+      if(missedCard) missedCard.style.display='block';
+    }catch(_){ markSeen(); }
+  }
+  // Run shortly after live starts
+  setTimeout(showWhatYouMissedIfAny, 1200);
+  // Mark seen on first interaction
+  ['click','keydown','touchstart','wheel'].forEach(evt=>{ window.addEventListener(evt, ()=>{ markSeen(); }, { once:true, passive:true }); });
 
   setInterval(()=>{ const now=Date.now(); lastPingCache.forEach((p,id)=>{ if(currentPotw && currentPotw.id===id) return; const ts=p.createdAt?.toDate? p.createdAt.toDate().getTime():0; if(ts && now-ts>LIVE_WINDOW_MS){ removeMarker(id); lastPingCache.delete(id); } }); },60*1000);
 
@@ -1247,6 +1396,7 @@ startRequestsListeners(currentUser.uid);
   const authorStatsLine=document.getElementById('authorStatsLine');
   const authorAddFriendBtn=document.getElementById('authorAddFriendBtn');
   const reactBar=$('#reactBar'), commentsEl=$('#comments'), commentInput=$('#commentInput');
+  const openInMapsBtn=document.getElementById('openInMapsBtn');
   let openId=null, openUnsub=null, openCommentsUnsub=null;
 
   function openSheet(id){
@@ -1285,6 +1435,23 @@ startRequestsListeners(currentUser.uid);
           try{ const vidBy=document.getElementById('videoByline'); if(vidBy){ vidBy.textContent = `by ${displayBase}`; } }catch(_){ }
         }catch(e){ console.warn('author row', e); }
       })();
+      // Open in Maps button
+      try{
+        if(openInMapsBtn){
+          const lat = Number(p.lat), lon = Number(p.lon);
+          const valid = Number.isFinite(lat) && Number.isFinite(lon);
+          openInMapsBtn.style.display = valid ? 'inline-flex' : 'none';
+          openInMapsBtn.onclick = ()=>{
+            if(!valid) return;
+            const isApple = /Mac|iPhone|iPad|iPod/i.test(navigator.platform) || /Safari\//.test(navigator.userAgent) && !/Chrome\//.test(navigator.userAgent);
+            // Prefer directions from current location
+            const apple = `https://maps.apple.com/?daddr=${lat},${lon}&dirflg=d`;
+            const google = `https://www.google.com/maps/dir/?api=1&destination=${lat},${lon}&travelmode=walking`;
+            const href = isApple ? apple : google;
+            try{ window.open(href, (isApple? '_self' : '_blank')); }catch(_){ location.href = href; }
+          };
+        }
+      }catch(_){ }
       // Render ping text with mentions if present
       try{
         if(Array.isArray(p.mentions) && p.mentions.length){ renderTextWithMentions(sheetText, String(p.text||''), p.mentions); }
@@ -1621,7 +1788,14 @@ startRequestsListeners(currentUser.uid);
         } else {
           el = pingTextInput;
         }
-        if(!el) return; const val = el.value; const at = val.lastIndexOf('@'); if(at>=0){ el.value = val.slice(0,at) + it.insert + ' '; el.focus(); const ev=new Event('input'); el.dispatchEvent(ev); }
+        if(!el) return;
+        // For Add Friend/gift fields, replace entire field with handle (no '@' search)
+        if(mentionTarget && (mentionTarget.type==='addfriend' || mentionTarget.type==='gift')){
+          el.value = it.insert;
+          el.focus(); const ev=new Event('input', {bubbles:true}); el.dispatchEvent(ev);
+          hideMentionSuggest(); return;
+        }
+        const val = el.value; const at = val.lastIndexOf('@'); if(at>=0){ el.value = val.slice(0,at) + it.insert + ' '; el.focus(); const ev=new Event('input', {bubbles:true}); el.dispatchEvent(ev); }
         hideMentionSuggest();
       }catch(_){ } };
       mentionSuggest.appendChild(row);
@@ -1917,6 +2091,8 @@ startRequestsListeners(currentUser.uid);
     const outRef= db.collection('friendRequests').where('from','==',uid).where('status','==','pending');
     reqInUnsub = inRef.onSnapshot(()=>updateRequestsUI().catch(console.error));
     reqOutUnsub = outRef.onSnapshot(()=>updateRequestsUI().catch(console.error));
+    // Initial paint in case there are existing requests
+    updateRequestsUI().catch(console.error);
   }
 
   async function updateRequestsUI(){
@@ -1935,10 +2111,16 @@ startRequestsListeners(currentUser.uid);
     cont.innerHTML='';
     for(const it of items){
       const other = (it.dir==='in' ? it.from : it.to);
-      const ud = await usersRef.doc(other).get();
-      const nm = ud.exists ? (ud.data().displayName||ud.data().handle||'Friend') : 'Friend';
+      let label='Unknown user';
+      try{
+        const ud = await usersRef.doc(other).get();
+        if(ud.exists){
+          const h = ud.data().handle||''; const disp = ud.data().displayName||ud.data().email||'';
+          label = h ? '@'+String(h).trim() : String(disp||'Friend');
+        }
+      }catch(_){ }
       const row = document.createElement('div'); row.className='req-card';
-      row.innerHTML = '<div><strong>'+nm+'</strong></div>';
+      row.innerHTML = '<div><strong>'+label+'</strong></div>';
       const actions = document.createElement('div'); actions.className='req-actions';
       if(it.dir==='in'){
         const acc=document.createElement('button'); acc.className='btn'; acc.textContent='✓';
@@ -2010,6 +2192,21 @@ startRequestsListeners(currentUser.uid);
   const emailDisplay = document.getElementById('emailDisplay');
   const handleInput = document.getElementById('handleInput');
   const saveHandle = document.getElementById('saveHandle');
+  const handleCooldownHint = document.getElementById('handleCooldownHint');
+
+  async function updateHandleCooldownUI(){
+    try{
+      if(!handleCooldownHint || !currentUser) return;
+      const uref = usersRef.doc(currentUser.uid); const ud = await uref.get();
+      const lastAt = ud.exists? (ud.data().lastHandleChangeAt && ud.data().lastHandleChangeAt.toDate ? ud.data().lastHandleChangeAt.toDate().getTime() : 0) : 0;
+      const prev = ud.exists? (ud.data().handle||null) : null;
+      if(!prev || !lastAt){ handleCooldownHint.textContent='You can change your username once every 7 days.'; return; }
+      const seven=7*24*3600*1000; const diff = Date.now() - lastAt;
+      if(diff>=seven){ handleCooldownHint.textContent='You can change your username now.'; return; }
+      const left = seven - diff; const days = Math.floor(left/(24*3600*1000)); const hours = Math.floor((left%(24*3600*1000))/(3600*1000));
+      handleCooldownHint.textContent = `Change allowed in ~${days}d ${hours}h`;
+    }catch(_){ }
+  }
   // Legacy button (may not exist): define to avoid ReferenceError
   const saveProfilePhoto = document.getElementById('saveProfilePhoto');
   const openSettingsBtn = document.getElementById('openSettings');
@@ -2055,6 +2252,7 @@ startRequestsListeners(currentUser.uid);
       }
       if(handleInput){ try{ const d=await usersRef.doc(currentUser.uid).get(); const h=d.exists? (d.data().handle||'') : ''; handleInput.value = h || ''; }catch(_){ } }
       if(emailDisplay){ try{ const d=await usersRef.doc(currentUser.uid).get(); const em = d.exists? (d.data().email||currentUser.email||''): (currentUser.email||''); emailDisplay.textContent = em || 'No email'; }catch(_){ } }
+      try{ await updateHandleCooldownUI(); }catch(_){ }
       // Stats line: PPs and streak
       try{
         const s=document.getElementById('ownStatsLine');
@@ -2194,6 +2392,9 @@ startRequestsListeners(currentUser.uid);
     });
   }
 
+  // Close pin preview modal
+  (function(){ const closeBtn=document.getElementById('closePinPreview'); if(closeBtn){ closeBtn.onclick=()=> closeModal('pinPreviewModal'); }})();
+
   async function renderLedger(){
     try{
       const el=document.getElementById('ledgerContent'); if(!el) return;
@@ -2225,7 +2426,7 @@ startRequestsListeners(currentUser.uid);
         // Cooldown: 7 days between changes (initial set exempt)
         const uref = usersRef.doc(currentUser.uid); const ud = await uref.get(); const prev = ud.exists? (ud.data().handle||null) : null; const lastAt = ud.exists? (ud.data().lastHandleChangeAt && ud.data().lastHandleChangeAt.toDate ? ud.data().lastHandleChangeAt.toDate().getTime() : 0) : 0;
         if(prev && prev !== raw && lastAt){ const diff = Date.now() - lastAt; const seven=7*24*3600*1000; if(diff < seven){ const left=seven-diff; const days=Math.ceil(left/(24*3600*1000)); showToast(`Change allowed in ~${days} day(s)`,'warning'); return; } }
-        if(prev === raw){ await refreshAuthUI(currentUser); showToast('Username saved'); return; }
+        if(prev === raw){ await refreshAuthUI(currentUser); await updateHandleCooldownUI(); showToast('Username saved'); return; }
         await db.runTransaction(async tx=>{
           if(prev && prev !== raw){ tx.delete(db.collection('handles').doc(prev)); }
           const now=firebase.firestore.FieldValue.serverTimestamp();
@@ -2234,6 +2435,7 @@ startRequestsListeners(currentUser.uid);
           tx.set(uref.collection('ledger').doc(), { ts: now, type:'award', amount:0, reason:'handle_change' });
         });
         await refreshAuthUI(currentUser);
+        try{ await updateHandleCooldownUI(); }catch(_){ }
         showToast('Username updated');
       }catch(e){ console.error(e); showToast('Update failed'); }
     };
@@ -2305,6 +2507,37 @@ startRequestsListeners(currentUser.uid);
   // Custom Ping UI setup
   const customPingOptions = document.getElementById('customPingOptions');
   const customPingInput = document.getElementById('customPingInput');
+  const pingCropModal = document.getElementById('pingCropModal');
+  const pingCropImage = document.getElementById('pingCropImage');
+  const pingCropZoom = document.getElementById('pingCropZoom');
+  const closePingCrop = document.getElementById('closePingCrop');
+  const savePingCrop = document.getElementById('savePingCrop');
+  const pingPreview = document.getElementById('pingPreview');
+  const pingCropState = { startX:0,startY:0,imgX:0,imgY:0,dragging:false,scale:1,imgW:0,imgH:0 };
+  function renderPingCropTransform(){
+    if(!pingCropImage) return;
+    const s=Math.max(0.2, Math.min(5, pingCropState.scale));
+    pingCropImage.style.transform = `translate(calc(-50% + ${pingCropState.imgX}px), calc(-50% + ${pingCropState.imgY}px)) scale(${s})`;
+    // Also render live preview
+    try{
+      const canvas = pingPreview; if(!canvas) return; const ctx=canvas.getContext('2d'); if(!ctx) return; ctx.clearRect(0,0,canvas.width,canvas.height);
+      // Draw pin path and clip
+      ctx.save(); ctx.scale(canvas.width/100, canvas.height/100); const path=new Path2D('M50 10c17 0 30 13 30 30 0 22-30 50-30 50S20 62 20 40c0-17 13-30 30-30z'); ctx.clip(path); ctx.setTransform(1,0,0,1,0,0);
+      const img=pingCropImage; if(!img || !img.naturalWidth) { ctx.restore(); return; }
+      const base=Math.min(canvas.width/img.naturalWidth, canvas.height/img.naturalHeight);
+      const drawS = s*base; const drawW=img.naturalWidth*drawS, drawH=img.naturalHeight*drawS;
+      const frameEl=document.getElementById('pingCropFrame'); const offX=(pingCropState.imgX/frameEl.clientWidth)*canvas.width; const offY=(pingCropState.imgY/frameEl.clientHeight)*canvas.height;
+      const dx=canvas.width/2 - drawW/2 + offX; const dy=canvas.height/2 - drawH/2 + offY;
+      ctx.drawImage(img, dx, dy, drawW, drawH);
+      ctx.restore();
+      // Outline
+      ctx.save(); ctx.scale(canvas.width/100, canvas.height/100); ctx.strokeStyle='rgba(0,0,0,.35)'; ctx.lineWidth=1.8; ctx.stroke(path); ctx.restore();
+    }catch(_){ }
+  }
+  function addPingDrag(el){ el.addEventListener('pointerdown', (e)=>{ pingCropState.dragging=true; pingCropState.startX=e.clientX; pingCropState.startY=e.clientY; el.setPointerCapture(e.pointerId); }); el.addEventListener('pointermove', (e)=>{ if(!pingCropState.dragging) return; const dx=e.clientX-pingCropState.startX, dy=e.clientY-pingCropState.startY; pingCropState.imgX+=dx; pingCropState.imgY+=dy; pingCropState.startX=e.clientX; pingCropState.startY=e.clientY; renderPingCropTransform(); }); el.addEventListener('pointerup', ()=>{ pingCropState.dragging=false; }); el.addEventListener('pointercancel', ()=>{ pingCropState.dragging=false; }); }
+  if(pingCropImage){ addPingDrag(pingCropImage); }
+  if(pingCropZoom){ pingCropZoom.oninput=(e)=>{ pingCropState.scale=Number(e.target.value||'1'); renderPingCropTransform(); }; }
+  if(closePingCrop){ closePingCrop.onclick = ()=> closeModal('pingCropModal'); }
   const TIERS=[{tier:0,label:'Default',price:0},{tier:100,label:'Purple',price:100},{tier:200,label:'Alien',price:200},{tier:300,label:'Galactic',price:300},{tier:500,label:'Nuke',price:500},{tier:1000,label:'Custom Image',price:1000}];
   async function renderCustomPingUI(){
     try{
@@ -2314,14 +2547,25 @@ startRequestsListeners(currentUser.uid);
       customPingOptions.innerHTML=''; customPingOptions.classList.add('ping-grid');
       TIERS.forEach(t=>{
         const row=document.createElement('div'); row.className='ping-card';
-        const ownedFlag = !!owned[t.tier] || t.tier===0;
+        let ownedFlag = !!owned[t.tier] || t.tier===0;
         const price = t.price;
         const preview=document.createElement('div'); preview.className='pin-preview';
-        let svg = balloonSVG(t.tier===0? '#16a34a' : (t.tier===100?'#7c3aed': t.tier===200?'#0ea5e9': t.tier===300?'#0f172a': t.tier===500?'#fde047':'#e5e7eb'), 18, { variant: t.tier===200?'alien': t.tier===300?'galactic': t.tier===500?'nuke': null });
-        if(t.tier===1000){ svg = balloonSVG('#e5e7eb',16,{ image:null }); }
+        let svg = balloonSVG(t.tier===0? '#16a34a' : (t.tier===100?'#7c3aed': t.tier===200?'#0ea5e9': t.tier===300?'#0f172a': t.tier===500?'#fde047':'#e5e7eb'), 42, { variant: t.tier===200?'alien': t.tier===300?'galactic': t.tier===500?'nuke': null });
+        if(t.tier===1000){ svg = balloonSVG('#e5e7eb',42,{ image: (u.customPingUrl||null) }); }
         preview.innerHTML=svg.html;
-        const label=document.createElement('div'); label.textContent = `${t.label}${price?` — ${price} PPs`:''}`; label.style.flex='1';
-        const btn=document.createElement('button'); btn.className='btn'; btn.textContent = ownedFlag? (sel===t.tier?'Selected':'Select') : 'Unlock';
+        // Click to open big preview modal
+        preview.style.cursor='zoom-in';
+        preview.onclick=()=>{
+          try{
+            const big=document.getElementById('pinPreviewBig'); if(!big) return; const bigSvg = (t.tier===1000) ? balloonSVG('#e5e7eb', 480, { image:(u.customPingUrl||null) }) : balloonSVG((t.tier===0?'#16a34a': t.tier===100?'#7c3aed': t.tier===200?'#0ea5e9': t.tier===300?'#0f172a': t.tier===500?'#fde047':'#e5e7eb'), 480, { variant: t.tier===200?'alien': t.tier===300?'galactic': t.tier===500?'nuke': null });
+            big.innerHTML=bigSvg.html;
+            try{ const svgEl = big.querySelector('svg'); if(svgEl){ svgEl.style.width='min(680px, 90%)'; svgEl.style.height='auto'; } }catch(_){ }
+            openModal('pinPreviewModal');
+          }catch(_){ }
+        };
+        const label=document.createElement('div'); label.className='ping-label'; label.textContent = `${t.label}${price?` — ${price} PPs`:''}`; label.style.fontWeight='900';
+        const btn=document.createElement('button'); btn.className='btn'; btn.textContent = ownedFlag? (sel===t.tier?'Selected':'Select') : 'Unlock'; btn.style.minWidth='76px';
+        
         if(!ownedFlag && t.tier!==0){ btn.onclick = async ()=>{
           try{
             await db.runTransaction(async tx=>{
@@ -2339,7 +2583,15 @@ startRequestsListeners(currentUser.uid);
         }
         row.appendChild(preview); row.appendChild(label); row.appendChild(btn);
         const lock=document.createElement('div'); lock.className='lock'; lock.textContent = ownedFlag? '' : '🔒'; row.appendChild(lock);
-        if(!ownedFlag && t.tier===1000){ const up=document.createElement('label'); up.className='btn'; up.textContent='Upload'; up.htmlFor='customPingInput'; row.appendChild(up); }
+        if(t.tier===1000){
+          const up=document.createElement('label');
+          up.className='btn';
+          up.textContent='Upload Image';
+          up.htmlFor='customPingInput';
+          up.style.padding='10px 14px';
+          // place upload button right before the Select/Unlock button
+          row.insertBefore(up, btn);
+        }
         customPingOptions.appendChild(row);
       });
     }catch(_){ }
@@ -2360,23 +2612,65 @@ startRequestsListeners(currentUser.uid);
     if(e.target && e.target.id==='openSettings'){
       setTimeout(()=>{ try{ renderCustomPingUI(); }catch(_){ } }, 0);
     }
+    
   });
+  
+
 
   // Handle custom ping image upload (1000-tier)
   if(customPingInput){
     customPingInput.onchange = ()=>{
       try{
         const f=customPingInput.files && customPingInput.files[0]; if(!f) return; if(f.size>5*1024*1024) return showToast('Image must be ≤ 5MB','warning');
-        // Reuse avatar cropper to capture square then save as custom ping image
-        openCropperWith(f);
-        // On save, also store as customPingUrl if user owns 1000-tier
-        const orig=saveCroppedAvatar.onclick; saveCroppedAvatar.onclick = async ()=>{
+        // Load image into ping crop modal (independent of avatar)
+        const url = URL.createObjectURL(f);
+        pingCropState.imgX=0; pingCropState.imgY=0; pingCropState.scale=1;
+        if(pingCropZoom){ try{ pingCropZoom.value='1'; }catch(_){ } }
+        if(pingCropImage){ pingCropImage.src=url; pingCropImage.onload=()=>{ URL.revokeObjectURL(url); renderPingCropTransform(); }; }
+        openModal('pingCropModal');
+        // Save handler for pin-shaped export
+        if(savePingCrop){ savePingCrop.onclick = async ()=>{
           try{
-            await orig.call(saveCroppedAvatar);
-            if(!currentUser) return; const u=await usersRef.doc(currentUser.uid).get(); const owned=(u.exists? u.data().ownedPings||{}:{});
-            if(owned[1000]){ const url = (await usersRef.doc(currentUser.uid).get()).data().photoURL; await usersRef.doc(currentUser.uid).set({ customPingUrl:url }, { merge:true }); showToast('Custom ping image set','success'); }
-          }catch(_){ }
-        };
+            if(!currentUser) return;
+            const ownedSnap=await usersRef.doc(currentUser.uid).get(); const owned=(ownedSnap.exists? ownedSnap.data().ownedPings||{}:{});
+            if(!owned[1000]){ showToast('Unlock Custom Image ping first'); return; }
+            const canvas=document.createElement('canvas'); canvas.width=200; canvas.height=280; const ctx=canvas.getContext('2d');
+            const img=pingCropImage; if(!img || !img.naturalWidth){ showToast('Image not ready'); return; }
+            // Define pin clip in normalized coords; keep clip active across drawing
+            ctx.save();
+            ctx.scale(canvas.width/100, canvas.height/100);
+            const path=new Path2D('M50 10c17 0 30 13 30 30 0 22-30 50-30 50S20 62 20 40c0-17 13-30 30-30z');
+            ctx.clip(path);
+            // Reset transform but keep clip
+            ctx.setTransform(1,0,0,1,0,0);
+            // Scale image to CONTAIN canvas initially, then apply user zoom + pan
+            const frameEl = document.getElementById('pingCropFrame');
+            const base = Math.min(canvas.width / img.naturalWidth, canvas.height / img.naturalHeight);
+            const s = Math.max(0.2, Math.min(5, pingCropState.scale)) * base;
+            const drawW = img.naturalWidth * s;
+            const drawH = img.naturalHeight * s;
+            const offX = (pingCropState.imgX / frameEl.clientWidth) * canvas.width;
+            const offY = (pingCropState.imgY / frameEl.clientHeight) * canvas.height;
+            const dx = canvas.width/2 - drawW/2 + offX;
+            const dy = canvas.height/2 - drawH/2 + offY;
+            ctx.drawImage(img, dx, dy, drawW, drawH);
+            // Fill background to ensure no transparency, then restore
+            ctx.globalCompositeOperation='destination-over';
+            ctx.fillStyle='#ffffff';
+            ctx.fillRect(0,0,canvas.width,canvas.height);
+            // Restore after draw (clip no longer needed)
+            ctx.restore();
+            const dataUrl = canvas.toDataURL('image/png');
+            await usersRef.doc(currentUser.uid).set({ customPingUrl:dataUrl, selectedPingTier:1000 }, { merge:true });
+            // Refresh cache and markers immediately
+            try{ userDocCache.delete(currentUser.uid); }catch(_){ }
+            try{ // Update icons synchronously for best UX
+              markers.forEach((m,id)=>{ const p=lastPingCache.get(id); if(!p) return; if(p.authorId===currentUser.uid){ iconForPing(p,false).then(ic=>{ try{ m.setIcon(ic); }catch(_){ } }); } });
+            }catch(_){ }
+            try{ renderCustomPingUI(); }catch(_){ }
+            closeModal('pingCropModal'); showToast('Custom ping image set','success');
+          }catch(_){ showToast('Save failed'); }
+        }; }
       }catch(_){ }
     };
   }
