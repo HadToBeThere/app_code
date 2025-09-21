@@ -513,7 +513,7 @@ startRequestsListeners(currentUser.uid);
   }
 
   // Re-evaluate PotW after any auth change (filters/me/friends may differ)
-  recomputePotw().catch(console.error);
+  if(typeof recomputePotw === 'function') recomputePotw().catch(console.error);
 }
 
   // Hard UI flip helper (in case listeners/races delay refresh)
@@ -1083,7 +1083,7 @@ startRequestsListeners(currentUser.uid);
       upsertMarker(p);
     });
     // 🔑 Ensure PotW is re-evaluated on every live update
-    recomputePotw().catch(console.error);
+    if(typeof recomputePotw === 'function') recomputePotw().catch(console.error);
     // 🔥 Recompute hotspot after snapshot processed
     scheduleHotspotRecompute();
   }, e=>{ console.error(e); showToast((e.code||'error')+': '+(e.message||'live error')); });
