@@ -97,7 +97,7 @@ async function main(){
     try{
       toastEl.className = 'toast show';
       // Basic color coding by type without changing layout
-      if(kind==='success'){ toastEl.style.background='#111'; toastEl.style.border='1px solid #16a34a'; }
+      if(kind==='success'){ toastEl.style.background='#111'; toastEl.style.border='1px solid #0f8a3b'; }
       else if(kind==='error'){ toastEl.style.background='#111'; toastEl.style.border='1px solid #ef4444'; }
       else if(kind==='warning'){ toastEl.style.background='#111'; toastEl.style.border='1px solid #f59e0b'; }
       else { toastEl.style.background='#111'; toastEl.style.border='1px solid #e6e6e6'; }
@@ -767,12 +767,77 @@ startRequestsListeners(currentUser.uid);
   // On load, read saved hotspots but don't render until enabled after intro
   try{ const saved=loadHotspot(); if(saved && saved.length){ hotspotData=saved; if(hotspotsEnabled) drawHotspots(saved); } }catch(_){ }
   const innerPane = map.createPane('inner'); innerPane.style.zIndex=401; innerPane.classList.add('inner-pane','gray-all');
-  L.tileLayer('https://{s}.tile.openstreetmap.fr/hot/{z}/{x}/{y}.png',{ attribution:'© OpenStreetMap', maxZoom:22, pane:'inner' }).addTo(map);
+  // Try vector basemap first for color-targeted adjustments; fall back to raster
+  let vectorLayer=null;
+  try{
+    const MAPTILER_KEY = (window.MAPTILER_KEY||'');
+    if(MAPTILER_KEY){
+      const styleUrl = `https://api.maptiler.com/maps/streets-v2/style.json?key=${MAPTILER_KEY}`;
+      vectorLayer = (window.leafletMaplibreGL ? window.leafletMaplibreGL : L.maplibreGL)({
+        style: styleUrl,
+        pane:'inner'
+      });
+      vectorLayer.addTo(map);
+      vectorLayer.on('styledata',()=>{
+        try{
+          const mapgl = vectorLayer.getMaplibreMap ? vectorLayer.getMaplibreMap() : vectorLayer._glMap;
+          if(!mapgl || !mapgl.getStyle) return;
+          const st = mapgl.getStyle();
+          // Duplicate and tweak paint properties
+          for(const layer of st.layers){
+            // Hide labels entirely; we'll keep Leaflet labels overlay disabled for vector path
+            if(layer.type==='symbol'){
+              try{ mapgl.setLayoutProperty(layer.id,'visibility','none'); }catch(_){ }
+              continue;
+            }
+            // For fill/line layers, boost saturation differently for yellow vs others
+            const paintProps = Object.keys(layer.paint||{});
+            const isFill = layer.type==='fill';
+            const isLine = layer.type==='line';
+            if(!(isFill||isLine)) continue;
+            // Prefer color properties likely present
+            const colorProp = isFill ? 'fill-color' : 'line-color';
+            let val = layer.paint[colorProp];
+            if(!val) continue;
+            // Wrap color in an expression that adjusts saturation by hue
+            // Convert to HSL via expressions: not native, approximate by matrix on rgb -> use interpolate across hue
+            // Practical approach: if hue within [45,65] treat as yellow
+            const expr = [
+              'case',
+              ['all', ['>=',['h',['to-color',val]],45], ['<=',['h',['to-color',val]],65]],
+              ['saturate',['to-color',val], 0.2],
+              ['saturate',['to-color',val], 0.4]
+            ];
+            try{ mapgl.setPaintProperty(layer.id, colorProp, expr); }catch(_){ }
+          }
+        }catch(_){ }
+      });
+    }
+  }catch(_){ vectorLayer=null; }
+  if(!vectorLayer){
+    // Raster fallback (Voyager) without POI icons + labels pane
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager_nolabels/{z}/{x}/{y}{r}.png',{
+      attribution:'© OpenStreetMap contributors, © CARTO',
+      subdomains:'abcd',
+      maxZoom:22,
+      pane:'inner'
+    }).addTo(map);
+    const labelsPane = map.createPane('labels');
+    labelsPane.style.zIndex = 403;
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager_only_labels/{z}/{x}/{y}{r}.png',{
+      attribution:'© OpenStreetMap contributors, © CARTO',
+      subdomains:'abcd',
+      maxZoom:22,
+      pane:'labels'
+    }).addTo(map);
+  }
+
+  // Removed McGill campus shading overlay by request
 
   let FENCE_CENTER = L.latLng(DEFAULT_CENTER);
   let userPos = null;
 
-  const fenceCircle = L.circle(FENCE_CENTER,{ radius:RADIUS_M, color:'#16a34a', weight:2, opacity:.9, dashArray:'6 4', fillOpacity:0 }).addTo(map);
+  const fenceCircle = L.circle(FENCE_CENTER,{ radius:RADIUS_M, color:'#0f8a3b', weight:2, opacity:.9, dashArray:'6 4', fillOpacity:0 }).addTo(map);
   function updateViewConstraints(){ const fit = map.getBoundsZoom(fenceCircle.getBounds(), true); map.setMinZoom(fit); if(map.getZoom()<fit) map.setZoom(fit); }
   updateViewConstraints();
 
@@ -888,7 +953,7 @@ startRequestsListeners(currentUser.uid);
           </radialGradient>
           <radialGradient id="waste_${uid}" cx="50%" cy="50%" r="60%">
             <stop offset="0%" stop-color="#a3e635"/>
-            <stop offset="100%" stop-color="#16a34a"/>
+            <stop offset="100%" stop-color="#0f8a3b"/>
           </radialGradient>
         </defs>
         <!-- glowing core -->
@@ -933,7 +998,7 @@ startRequestsListeners(currentUser.uid);
 
   function colorForPing(p){
     const mine = (currentUser && p.authorId === currentUser.uid);
-    if (mine) return { kind:'mine', color:'#16a34a' };
+    if (mine) return { kind:'mine', color:'#0f8a3b' };
     const friend = myFriends.has(p.authorId);
     if (friend) return { kind:'friend', color:'#f59e0b' };
     return { kind:'other', color:'#0ea5e9' };
@@ -960,7 +1025,8 @@ startRequestsListeners(currentUser.uid);
     let style = colorForPing(p);
     try{
       const u = await awaitCachedUser(p.authorId);
-      if(u && u.selectedPingTier){
+      // Apply custom styles only if NOT a friend (keep friends orange)
+      if(u && u.selectedPingTier && style.kind !== 'friend'){
         const tier = Number(u.selectedPingTier||0);
         // Use customUrl for 1000-tier only
         style = { kind: style.kind, color: style.color, customTier: tier, customUrl: u.customPingUrl };
@@ -2591,14 +2657,14 @@ startRequestsListeners(currentUser.uid);
         let ownedFlag = !!owned[t.tier] || t.tier===0;
         const price = t.price;
         const preview=document.createElement('div'); preview.className='pin-preview';
-        let svg = balloonSVG(t.tier===0? '#16a34a' : (t.tier===100?'#7c3aed': t.tier===200?'#0ea5e9': t.tier===300?'#0f172a': t.tier===500?'#fde047':'#e5e7eb'), 42, { variant: t.tier===200?'alien': t.tier===300?'galactic': t.tier===500?'nuke': null });
+        let svg = balloonSVG(t.tier===0? '#0f8a3b' : (t.tier===100?'#7c3aed': t.tier===200?'#0ea5e9': t.tier===300?'#0f172a': t.tier===500?'#fde047':'#e5e7eb'), 42, { variant: t.tier===200?'alien': t.tier===300?'galactic': t.tier===500?'nuke': null });
         if(t.tier===1000){ svg = balloonSVG('#e5e7eb',42,{ image: (u.customPingUrl||null) }); }
         preview.innerHTML=svg.html;
         // Click to open big preview modal
         preview.style.cursor='zoom-in';
         preview.onclick=()=>{
           try{
-            const big=document.getElementById('pinPreviewBig'); if(!big) return; const bigSvg = (t.tier===1000) ? balloonSVG('#e5e7eb', 480, { image:(u.customPingUrl||null) }) : balloonSVG((t.tier===0?'#16a34a': t.tier===100?'#7c3aed': t.tier===200?'#0ea5e9': t.tier===300?'#0f172a': t.tier===500?'#fde047':'#e5e7eb'), 480, { variant: t.tier===200?'alien': t.tier===300?'galactic': t.tier===500?'nuke': null });
+            const big=document.getElementById('pinPreviewBig'); if(!big) return; const bigSvg = (t.tier===1000) ? balloonSVG('#e5e7eb', 480, { image:(u.customPingUrl||null) }) : balloonSVG((t.tier===0?'#0f8a3b': t.tier===100?'#7c3aed': t.tier===200?'#0ea5e9': t.tier===300?'#0f172a': t.tier===500?'#fde047':'#e5e7eb'), 480, { variant: t.tier===200?'alien': t.tier===300?'galactic': t.tier===500?'nuke': null });
             big.innerHTML=bigSvg.html;
             try{ const svgEl = big.querySelector('svg'); if(svgEl){ svgEl.style.width='min(680px, 90%)'; svgEl.style.height='auto'; } }catch(_){ }
             openModal('pinPreviewModal');
