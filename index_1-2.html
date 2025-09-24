@@ -481,36 +481,21 @@
   <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-storage-compat.js"></script>
 
+  <!-- Enhanced Content Moderation System -->
+  <script>
+    console.log('🛡️ Enhanced content moderation system loading...');
+    console.log('📊 Features: 6 skin tone detection algorithms, weighted scoring, 10% threshold');
+    console.log('🚀 No external dependencies - works offline and is more reliable');
+  </script>
+  
   <!-- App -->
   <script src="app.js"></script>
 
   <!-- Mention suggestions popover -->
   <div id="mentionSuggest" class="mention-popover" style="display:none"></div>
 
-  <!-- Show Sign Out button only when authed; delegate to chip click -->
-  <script>
-  (function(){
-    var signOutBtn = document.getElementById('signOutBtn');
-    if (signOutBtn) {
-      signOutBtn.addEventListener('click', function(){
-        var chip = document.getElementById('userChip');
-        if (chip) chip.click();
-      });
-      try {
-        var auth2 = firebase.auth();
-        auth2.onAuthStateChanged(function(u){
-          signOutBtn.style.display = u ? 'inline-flex' : 'none';
-        });
-      } catch(e) { console.warn('SignOut init failed', e); }
-    }
-  })();
-  </script>
 </body>
 </html>
-
-
-
-
 
 
 

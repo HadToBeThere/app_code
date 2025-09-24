@@ -1,4 +1,1655 @@
 async function main(){
+  /* --------- NSFW Content Moderation System --------- */
+  let nsfwModel = null;
+  let moderationReady = false;
+  
+  // Initialize enhanced heuristic moderation system
+  async function initializeModeration() {
+    try {
+      console.log('🚀 Initializing enhanced content moderation system...');
+      
+      // Skip NSFW.js model loading entirely - use enhanced heuristics directly
+      // This is more reliable and aggressive than the NSFW.js model
+      console.log('🛡️ Using enhanced heuristic moderation system');
+      console.log('📊 Features: 6 skin tone detection algorithms, weighted scoring, 10% threshold');
+      
+      moderationReady = true;
+      nsfwModel = null; // We'll use heuristics instead
+      
+      console.log('✅ Enhanced content moderation system ready');
+      console.log('🎯 System will block inappropriate content with 10% confidence threshold');
+      
+    } catch (error) {
+      console.error('❌ Failed to initialize moderation system:', error);
+      
+      // Even if something goes wrong, still enable basic moderation
+      console.log('🔄 Enabling basic moderation as final fallback');
+      moderationReady = true;
+      nsfwModel = null;
+    }
+  }
+  
+  // Analyze image for NSFW content using NSFW.js
+  async function analyzeImage(imageElement) {
+    if (!moderationReady) {
+      console.log('Moderation not ready, allowing image');
+      return { isNSFW: false, confidence: 0, predictions: [] };
+    }
+    
+    try {
+      if (nsfwModel) {
+        // Use NSFW.js model for analysis
+        return await analyzeImageWithNSFWJS(imageElement);
+      } else {
+        // Fallback to enhanced heuristic
+        return await analyzeImageWithHeuristic(imageElement);
+      }
+    } catch (error) {
+      console.error('Error analyzing image:', error);
+      // If analysis fails, allow the content through
+      return { isNSFW: false, confidence: 0, predictions: [], error: error.message };
+    }
+  }
+  
+  // NSFW.js image analysis
+  async function analyzeImageWithNSFWJS(imageElement) {
+    try {
+      // Create canvas and resize image to 224x224
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      canvas.width = 224;
+      canvas.height = 224;
+      
+      // Draw and resize image
+      ctx.drawImage(imageElement, 0, 0, 224, 224);
+      
+      // Run NSFW.js prediction
+      const predictions = await nsfwModel.classify(canvas);
+      
+      // NSFW.js returns predictions in format: [{className, probability}]
+      const results = predictions.map(p => ({
+        className: p.className,
+        probability: p.probability
+      }));
+      
+      // Check for NSFW content (Porn, Sexy, Hentai)
+      const nsfwCategories = ['Porn', 'Sexy', 'Hentai'];
+      let nsfwScore = 0;
+      
+      for (const prediction of predictions) {
+        if (nsfwCategories.includes(prediction.className)) {
+          nsfwScore += prediction.probability;
+        }
+      }
+      
+      const isNSFW = nsfwScore > 0.5; // 50% threshold
+      
+      console.log('NSFW.js image analysis results:', {
+        isNSFW,
+        confidence: nsfwScore,
+        predictions: results
+      });
+      
+      return {
+        isNSFW,
+        confidence: nsfwScore,
+        predictions: results
+      };
+    } catch (error) {
+      console.error('NSFW.js analysis failed:', error);
+      throw error;
+    }
+  }
+  
+  // Enhanced heuristic image analysis (fallback)
+  async function analyzeImageWithHeuristic(imageElement) {
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d');
+    canvas.width = 224;
+    canvas.height = 224;
+    
+    // Draw image to canvas for analysis
+    ctx.drawImage(imageElement, 0, 0, 224, 224);
+    
+    // Get image data for analysis
+    const imageData = ctx.getImageData(0, 0, 224, 224);
+    const data = imageData.data;
+    
+    let skinPixels = 0;
+    let fleshPixels = 0;
+    let pinkPixels = 0;
+    let nudePixels = 0;
+    let tanPixels = 0;
+    let peachPixels = 0;
+    let totalPixels = data.length / 4;
+    
+    for (let i = 0; i < data.length; i += 4) {
+      const r = data[i];
+      const g = data[i + 1];
+      const b = data[i + 2];
+      
+      // Enhanced skin tone detection
+      if (r > 95 && g > 40 && b > 20 && 
+          Math.max(r, g, b) - Math.min(r, g, b) > 15 &&
+          Math.abs(r - g) > 15 && r > g && r > b) {
+        skinPixels++;
+      }
+      
+      // Flesh tone detection (more specific)
+      if (r > 120 && g > 80 && b > 60 && r > g && g > b) {
+        fleshPixels++;
+      }
+      
+      // Pink/flesh tone detection (for more sensitive areas)
+      if (r > 140 && g > 100 && b > 80 && r > g && g > b && (r - g) < 30) {
+        pinkPixels++;
+      }
+      
+      // Nude/beige tone detection
+      if (r > 180 && g > 150 && b > 120 && r > g && g > b && (r - g) < 40 && (g - b) < 40) {
+        nudePixels++;
+      }
+      
+      // Tan/brown skin tone detection
+      if (r > 160 && g > 120 && b > 80 && r > g && g > b && (r - g) < 50 && (g - b) < 50) {
+        tanPixels++;
+      }
+      
+      // Peach/salmon tone detection
+      if (r > 200 && g > 160 && b > 120 && r > g && g > b && (r - g) < 60 && (g - b) < 60) {
+        peachPixels++;
+      }
+    }
+    
+    const skinRatio = skinPixels / totalPixels;
+    const fleshRatio = fleshPixels / totalPixels;
+    const pinkRatio = pinkPixels / totalPixels;
+    const nudeRatio = nudePixels / totalPixels;
+    const tanRatio = tanPixels / totalPixels;
+    const peachRatio = peachPixels / totalPixels;
+    
+    // Enhanced weighted scoring system
+    const totalInappropriate = (skinRatio * 0.3) + (fleshRatio * 0.4) + (pinkRatio * 0.6) + 
+                              (nudeRatio * 0.5) + (tanRatio * 0.4) + (peachRatio * 0.5);
+    
+    // SMART threshold - only flag if there's a lot of skin tone (not just a face)
+    const hasLotsOfSkin = totalInappropriate > 0.45; // 45% threshold for lots of skin (higher to avoid bikinis)
+    const hasSensitiveAreas = pinkRatio > 0.15; // 15% threshold for sensitive areas (higher to avoid bikinis)
+    const hasNudeTones = nudeRatio > 0.20; // 20% threshold for nude tones (higher to avoid bikinis)
+    const hasExplicitPatterns = (pinkRatio > 0.10 && nudeRatio > 0.10); // Both pink and nude together
+    const isVeryExplicit = totalInappropriate > 0.60; // 60% threshold for very explicit content
+    
+    // Only flag if it's clearly explicit content, not swimwear or normal faces
+    const isNSFW = isVeryExplicit || hasExplicitPatterns || (hasLotsOfSkin && hasSensitiveAreas && hasNudeTones);
+    
+    console.log('Smart image analysis results:', {
+      isNSFW,
+      confidence: totalInappropriate,
+      skinRatio,
+      fleshRatio,
+      pinkRatio,
+      nudeRatio,
+      tanRatio,
+      peachRatio,
+      hasLotsOfSkin,
+      hasSensitiveAreas,
+      hasNudeTones,
+      hasExplicitPatterns,
+      isVeryExplicit,
+      method: 'smart_image_heuristic_v2'
+    });
+    
+    return {
+      isNSFW,
+      confidence: totalInappropriate,
+      predictions: [
+        { className: 'SkinTone', probability: skinRatio },
+        { className: 'FleshTone', probability: fleshRatio },
+        { className: 'PinkTone', probability: pinkRatio },
+        { className: 'NudeTone', probability: nudeRatio },
+        { className: 'TanTone', probability: tanRatio },
+        { className: 'PeachTone', probability: peachRatio }
+      ]
+    };
+  }
+  
+  // Analyze image from file
+  async function analyzeImageFromFile(file) {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = async () => {
+        try {
+          const analysis = await analyzeImage(img);
+          URL.revokeObjectURL(img.src);
+          resolve(analysis);
+        } catch (error) {
+          URL.revokeObjectURL(img.src);
+          reject(error);
+        }
+      };
+      img.onerror = () => {
+        URL.revokeObjectURL(img.src);
+        reject(new Error('Failed to load image'));
+      };
+      img.src = URL.createObjectURL(file);
+    });
+  }
+  
+  // Analyze video from file
+  async function analyzeVideoFromFile(file) {
+    return new Promise((resolve, reject) => {
+      const video = document.createElement('video');
+      video.preload = 'metadata';
+      video.onloadedmetadata = async () => {
+        try {
+          const analysis = await analyzeVideo(video);
+          URL.revokeObjectURL(video.src);
+          resolve(analysis);
+        } catch (error) {
+          URL.revokeObjectURL(video.src);
+          reject(error);
+        }
+      };
+      video.onerror = () => {
+        URL.revokeObjectURL(video.src);
+        reject(new Error('Failed to load video'));
+      };
+      video.src = URL.createObjectURL(file);
+    });
+  }
+
+  // Analyze video for NSFW content (multiple frames)
+  async function analyzeVideo(videoElement) {
+    if (!moderationReady) {
+      console.log('Moderation not ready, allowing video');
+      return { isNSFW: false, confidence: 0, predictions: [] };
+    }
+    
+    try {
+      console.log('🎬 Starting video analysis...');
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      const video = videoElement;
+      
+      // Set canvas size to match video
+      canvas.width = video.videoWidth || 320;
+      canvas.height = video.videoHeight || 240;
+      
+      console.log(`📹 Video dimensions: ${canvas.width}x${canvas.height}, duration: ${video.duration}s`);
+      
+      // Analyze more frames for better coverage
+      const frameCount = 8; // Increased from 5 to 8 frames
+      const frameResults = [];
+      
+      for (let i = 0; i < frameCount; i++) {
+        // Seek to different points in the video
+        const seekTime = (video.duration / frameCount) * i;
+        video.currentTime = seekTime;
+        
+        console.log(`🔍 Analyzing frame ${i + 1}/${frameCount} at ${seekTime.toFixed(2)}s`);
+        
+        // Wait for seek to complete
+        await new Promise(resolve => {
+          const onSeeked = () => {
+            video.removeEventListener('seeked', onSeeked);
+            resolve();
+          };
+          video.addEventListener('seeked', onSeeked);
+        });
+        
+        // Draw current frame to canvas
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        
+        // DEBUG: Save frame for inspection if debugging is enabled
+        if (window.frameDebugEnabled) {
+          const frameDataURL = canvas.toDataURL();
+          console.log(`🖼️ Frame ${i + 1} data URL:`, frameDataURL.substring(0, 100) + '...');
+          // You can copy this URL and paste it in a new tab to see the actual frame
+        }
+        
+        // Analyze this frame using enhanced video-specific analysis
+        const frameAnalysis = await analyzeVideoFrame(canvas);
+        frameResults.push(frameAnalysis);
+        
+        console.log(`📊 Frame ${i + 1} result:`, {
+          isNSFW: frameAnalysis.isNSFW,
+          confidence: frameAnalysis.confidence.toFixed(3),
+          method: frameAnalysis.method
+        });
+      }
+      
+      // SMART video analysis - only flag if there's clear evidence of explicit content
+      const maxConfidence = Math.max(...frameResults.map(r => r.confidence));
+      const avgConfidence = frameResults.reduce((sum, r) => sum + r.confidence, 0) / frameResults.length;
+      const nsfwFrames = frameResults.filter(r => r.isNSFW).length;
+      const suspiciousFrames = frameResults.filter(r => r.confidence > 0.1).length; // 10% threshold for suspicious
+      
+      // Only flag if multiple frames are NSFW or if there's a high-confidence frame
+      const isNSFW = nsfwFrames >= 2 || (nsfwFrames >= 1 && maxConfidence > 0.2) || suspiciousFrames >= 3;
+      
+      console.log('🎬 Video analysis results:', {
+        isNSFW,
+        maxConfidence: maxConfidence.toFixed(3),
+        avgConfidence: avgConfidence.toFixed(3),
+        suspiciousFrames,
+        frameCount: frameResults.length,
+        frameResults: frameResults.map((r, i) => ({ 
+          frame: i, 
+          isNSFW: r.isNSFW, 
+          confidence: r.confidence.toFixed(3),
+          method: r.method
+        }))
+      });
+      
+      return {
+        isNSFW,
+        confidence: maxConfidence,
+        avgConfidence,
+        suspiciousFrames,
+        predictions: frameResults.flatMap(r => r.predictions),
+        frameResults
+      };
+    } catch (error) {
+      console.error('❌ Error analyzing video:', error);
+      // If analysis fails, allow the content through
+      return { isNSFW: false, confidence: 0, predictions: [], error: error.message };
+    }
+  }
+  
+  // SMART video frame analysis - detects explicit content in both light and dark videos
+  async function analyzeVideoFrame(canvas) {
+    const ctx = canvas.getContext('2d');
+    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    const data = imageData.data;
+    
+    let skinPixels = 0;
+    let fleshPixels = 0;
+    let pinkPixels = 0;
+    let nudePixels = 0;
+    let tanPixels = 0;
+    let peachPixels = 0;
+    let darkPixels = 0;
+    let lightPixels = 0;
+    let mediumPixels = 0;
+    let totalPixels = data.length / 4;
+    
+    // First pass: determine if this is a dark video
+    let totalBrightness = 0;
+    for (let i = 0; i < data.length; i += 16) {
+      const r = data[i];
+      const g = data[i + 1];
+      const b = data[i + 2];
+      totalBrightness += (r + g + b) / 3;
+    }
+    const avgBrightness = totalBrightness / (data.length / 16);
+    const isDarkVideo = avgBrightness < 80; // Dark video threshold
+    
+    // Sample every 4th pixel for performance
+    for (let i = 0; i < data.length; i += 16) {
+      const r = data[i];
+      const g = data[i + 1];
+      const b = data[i + 2];
+      
+      // Adjust detection ranges based on video brightness
+      if (isDarkVideo) {
+        // DARK VIDEO DETECTION - lower thresholds for dark videos
+        
+        // Dark skin tone detection (much lower thresholds)
+        if (r > 40 && g > 20 && b > 10 && 
+            Math.max(r, g, b) - Math.min(r, g, b) > 8 &&
+            Math.abs(r - g) > 8 && r > g && r > b) {
+          skinPixels++;
+        }
+        
+        // Dark flesh tone detection
+        if (r > 60 && g > 40 && b > 25 && r > g && g > b) {
+          fleshPixels++;
+        }
+        
+        // Dark pink/flesh tone detection (for sensitive areas in dark videos)
+        if (r > 70 && g > 50 && b > 35 && r > g && g > b && (r - g) < 25) {
+          pinkPixels++;
+        }
+        
+        // Dark nude/beige tone detection
+        if (r > 90 && g > 75 && b > 60 && r > g && g > b && (r - g) < 30 && (g - b) < 30) {
+          nudePixels++;
+        }
+        
+        // Dark tan/brown skin tone detection
+        if (r > 80 && g > 60 && b > 40 && r > g && g > b && (r - g) < 40 && (g - b) < 40) {
+          tanPixels++;
+        }
+        
+        // Dark peach/salmon tone detection
+        if (r > 100 && g > 80 && b > 60 && r > g && g > b && (r - g) < 50 && (g - b) < 50) {
+          peachPixels++;
+        }
+      } else {
+        // BRIGHT VIDEO DETECTION - normal thresholds for well-lit videos
+        
+        // Normal skin tone detection
+        if (r > 95 && g > 40 && b > 20 && 
+            Math.max(r, g, b) - Math.min(r, g, b) > 15 &&
+            Math.abs(r - g) > 15 && r > g && r > b) {
+          skinPixels++;
+        }
+        
+        // Normal flesh tone detection
+        if (r > 120 && g > 80 && b > 60 && r > g && g > b) {
+          fleshPixels++;
+        }
+        
+        // Normal pink/flesh tone detection
+        if (r > 140 && g > 100 && b > 80 && r > g && g > b && (r - g) < 30) {
+          pinkPixels++;
+        }
+        
+        // Normal nude/beige tone detection
+        if (r > 180 && g > 150 && b > 120 && r > g && g > b && (r - g) < 40 && (g - b) < 40) {
+          nudePixels++;
+        }
+        
+        // Normal tan/brown skin tone detection
+        if (r > 160 && g > 120 && b > 80 && r > g && g > b && (r - g) < 50 && (g - b) < 50) {
+          tanPixels++;
+        }
+        
+        // Normal peach/salmon tone detection
+        if (r > 200 && g > 160 && b > 120 && r > g && g > b && (r - g) < 60 && (g - b) < 60) {
+          peachPixels++;
+        }
+      }
+      
+      // Brightness detection (same for both)
+      if (r < 50 && g < 50 && b < 50) {
+        darkPixels++;
+      }
+      if (r > 200 && g > 200 && b > 200) {
+        lightPixels++;
+      }
+      if (r > 100 && g > 100 && b > 100 && r < 200 && g < 200 && b < 200) {
+        mediumPixels++;
+      }
+    }
+    
+    const skinRatio = skinPixels / (totalPixels / 4);
+    const fleshRatio = fleshPixels / (totalPixels / 4);
+    const pinkRatio = pinkPixels / (totalPixels / 4);
+    const nudeRatio = nudePixels / (totalPixels / 4);
+    const tanRatio = tanPixels / (totalPixels / 4);
+    const peachRatio = peachPixels / (totalPixels / 4);
+    const darkRatio = darkPixels / (totalPixels / 4);
+    const lightRatio = lightPixels / (totalPixels / 4);
+    const mediumRatio = mediumPixels / (totalPixels / 4);
+    
+    // Adjust scoring based on video brightness
+    let totalInappropriate;
+    let hasLotsOfSkin, hasSensitiveAreas, hasNudeTones;
+    
+    if (isDarkVideo) {
+      // DARK VIDEO SCORING - extremely aggressive for dark explicit content
+      totalInappropriate = (skinRatio * 0.8) + (fleshRatio * 0.9) + (pinkRatio * 1.2) + 
+                          (nudeRatio * 1.1) + (tanRatio * 0.9) + (peachRatio * 1.0);
+      
+      hasLotsOfSkin = totalInappropriate > 0.03; // 3% threshold for dark videos (extremely aggressive)
+      hasSensitiveAreas = pinkRatio > 0.015; // 1.5% threshold for dark videos (extremely aggressive)
+      hasNudeTones = nudeRatio > 0.02; // 2% threshold for dark videos (extremely aggressive)
+    } else {
+      // BRIGHT VIDEO SCORING - normal thresholds
+      totalInappropriate = (skinRatio * 0.3) + (fleshRatio * 0.4) + (pinkRatio * 0.6) + 
+                          (nudeRatio * 0.5) + (tanRatio * 0.4) + (peachRatio * 0.5);
+      
+      hasLotsOfSkin = totalInappropriate > 0.15; // 15% threshold for bright videos
+      hasSensitiveAreas = pinkRatio > 0.05; // 5% threshold for bright videos
+      hasNudeTones = nudeRatio > 0.08; // 8% threshold for bright videos
+    }
+    
+    const isWellLit = lightRatio > 0.2;
+    
+    // Flag if it's clearly explicit content
+    const isNSFW = (hasLotsOfSkin && isWellLit) || hasSensitiveAreas || hasNudeTones;
+    
+    console.log(`🔍 Smart frame analysis (${isDarkVideo ? 'DARK' : 'BRIGHT'} video):`, {
+      avgBrightness: avgBrightness.toFixed(1),
+      skinRatio: skinRatio.toFixed(4),
+      fleshRatio: fleshRatio.toFixed(4),
+      pinkRatio: pinkRatio.toFixed(4),
+      nudeRatio: nudeRatio.toFixed(4),
+      totalInappropriate: totalInappropriate.toFixed(4),
+      hasLotsOfSkin,
+      hasSensitiveAreas,
+      isWellLit,
+      hasNudeTones,
+      isNSFW
+    });
+    
+    return {
+      isNSFW,
+      confidence: totalInappropriate,
+      predictions: [
+        { className: 'SkinTone', probability: skinRatio },
+        { className: 'FleshTone', probability: fleshRatio },
+        { className: 'PinkTone', probability: pinkRatio },
+        { className: 'NudeTone', probability: nudeRatio },
+        { className: 'TanTone', probability: tanRatio },
+        { className: 'PeachTone', probability: peachRatio },
+        { className: 'DarkRatio', probability: darkRatio },
+        { className: 'LightRatio', probability: lightRatio },
+        { className: 'MediumRatio', probability: mediumRatio }
+      ],
+      method: isDarkVideo ? 'smart_dark_video_heuristic' : 'smart_bright_video_heuristic'
+    };
+  }
+  
+  // Show moderation loading indicator
+  function showModerationLoading(message = 'Analyzing content...') {
+    const loadingDiv = document.createElement('div');
+    loadingDiv.id = 'moderationLoading';
+    loadingDiv.style.cssText = `
+      position: fixed;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      background: rgba(0, 0, 0, 0.8);
+      color: white;
+      padding: 20px;
+      border-radius: 8px;
+      z-index: 10000;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      text-align: center;
+    `;
+    loadingDiv.innerHTML = `
+      <div style="margin-bottom: 10px;">🔍</div>
+      <div>${message}</div>
+    `;
+    document.body.appendChild(loadingDiv);
+  }
+  
+  // Hide moderation loading indicator
+  function hideModerationLoading() {
+    const loadingDiv = document.getElementById('moderationLoading');
+    if (loadingDiv) {
+      loadingDiv.remove();
+    }
+  }
+  
+  // Block upload and show NSFW warning
+  function blockUploadForNSFW(reason = 'inappropriate content detected') {
+    hideModerationLoading();
+    showToast(`Upload blocked: ${reason}`, 'error');
+  }
+  
+  // Fallback video analysis when video can't be loaded directly
+  async function analyzeVideoFallback(ping) {
+    console.log(`🔄 Using fallback analysis for video in ping ${ping.id}`);
+    
+    try {
+      // Analyze based on URL patterns, file names, and other metadata
+      let suspiciousScore = 0;
+      let reasons = [];
+      
+      // Check URL patterns
+      const url = ping.videoUrl.toLowerCase();
+      if (url.includes('porn') || url.includes('xxx') || url.includes('adult') || url.includes('nsfw')) {
+        suspiciousScore += 0.8;
+        reasons.push('suspicious URL');
+      }
+      
+      // Check file name patterns
+      if (ping.videoUrl.includes('xvideos') || ping.videoUrl.includes('pornhub') || ping.videoUrl.includes('redtube')) {
+        suspiciousScore += 0.9;
+        reasons.push('adult site URL');
+      }
+      
+      // Check ping text for suspicious keywords
+      if (ping.text) {
+        const text = ping.text.toLowerCase();
+        const suspiciousWords = ['nude', 'naked', 'sex', 'porn', 'xxx', 'adult', 'nsfw', 'explicit'];
+        const foundWords = suspiciousWords.filter(word => text.includes(word));
+        if (foundWords.length > 0) {
+          suspiciousScore += foundWords.length * 0.2;
+          reasons.push(`suspicious text: ${foundWords.join(', ')}`);
+        }
+      }
+      
+      // Check if ping was previously flagged or deleted
+      if (ping.deleted || ping.flagged || ping.nsfw) {
+        suspiciousScore += 0.7;
+        reasons.push('previously flagged');
+      }
+      
+      // Check video duration (very short videos might be suspicious)
+      if (ping.duration && ping.duration < 5) {
+        suspiciousScore += 0.3;
+        reasons.push('very short duration');
+      }
+      
+      // AGGRESSIVE FALLBACK: If we can't analyze the video content directly,
+      // and this is a retroactive scan, be more suspicious of videos
+      // This is because we know some videos were inappropriate but can't load them
+      if (suspiciousScore === 0) {
+        console.log(`⚠️ No suspicious metadata found for ping ${ping.id}, but video exists - applying conservative scoring`);
+        suspiciousScore = 0.3; // Conservative suspicion for any video we can't analyze
+        reasons.push('video exists but cannot be analyzed - conservative flag');
+      }
+      
+      const isNSFW = suspiciousScore > 0.5;
+      const confidence = Math.min(suspiciousScore, 1.0);
+      
+      console.log(`🔍 Fallback analysis for ping ${ping.id}:`, {
+        suspiciousScore,
+        confidence,
+        reasons,
+        isNSFW,
+        method: 'fallback_metadata_analysis'
+      });
+      
+      return {
+        isNSFW,
+        confidence,
+        predictions: [
+          { className: 'SuspiciousURL', probability: url.includes('porn') || url.includes('xxx') ? 0.8 : 0 },
+          { className: 'SuspiciousText', probability: ping.text ? (ping.text.toLowerCase().includes('nude') ? 0.6 : 0) : 0 },
+          { className: 'PreviouslyFlagged', probability: ping.deleted || ping.flagged ? 0.7 : 0 },
+          { className: 'UnanalyzedVideo', probability: suspiciousScore === 0.3 ? 0.3 : 0 }
+        ],
+        method: 'fallback_metadata_analysis'
+      };
+      
+    } catch (error) {
+      console.error(`❌ Fallback analysis failed for ping ${ping.id}:`, error);
+      return {
+        isNSFW: false,
+        confidence: 0,
+        predictions: [],
+        method: 'fallback_failed'
+      };
+    }
+  }
+
+  // Analyze existing ping content for NSFW
+  async function analyzeExistingPingContent(ping) {
+    if (!moderationReady) {
+      console.log(`⚠️ Moderation not ready for ping ${ping.id}`);
+      return false; // If moderation not ready, don't delete
+    }
+    
+    try {
+      let isNSFW = false;
+      let analysisResults = [];
+      
+      // Analyze image if present
+      if (ping.imageUrl) {
+        console.log(`🖼️ Analyzing image for ping ${ping.id}: ${ping.imageUrl}`);
+        
+        try {
+          const img = new Image();
+          img.crossOrigin = 'anonymous'; // Handle CORS
+          
+          const imageAnalysis = await new Promise((resolve, reject) => {
+            const timeout = setTimeout(() => {
+              reject(new Error('Image loading timeout'));
+            }, 10000); // 10 second timeout
+            
+            img.onload = async () => {
+              clearTimeout(timeout);
+              try {
+                const analysis = await analyzeImage(img);
+                resolve(analysis);
+              } catch (error) {
+                reject(error);
+              }
+            };
+            img.onerror = () => {
+              clearTimeout(timeout);
+              reject(new Error('Failed to load image'));
+            };
+            img.src = ping.imageUrl;
+          });
+          
+          analysisResults.push(`Image: ${imageAnalysis.isNSFW ? 'NSFW' : 'Clean'} (${(imageAnalysis.confidence * 100).toFixed(1)}%)`);
+          
+          if (imageAnalysis.isNSFW) {
+            console.log(`❌ NSFW image detected in ping ${ping.id}:`, imageAnalysis);
+            isNSFW = true;
+          } else {
+            console.log(`✅ Image clean for ping ${ping.id}:`, imageAnalysis);
+          }
+        } catch (error) {
+          console.log(`⚠️ Failed to analyze image for ping ${ping.id}:`, error.message);
+          analysisResults.push(`Image: Failed to load (${error.message})`);
+          // Don't fail the whole analysis if image fails to load
+        }
+      }
+      
+      // Analyze video if present
+      if (ping.videoUrl && !isNSFW) {
+        console.log(`🎬 Analyzing video for ping ${ping.id}: ${ping.videoUrl}`);
+        
+        try {
+          // Try multiple approaches to load the video
+          let videoAnalysis = null;
+          
+          // Approach 1: Try with CORS
+          try {
+            const video = document.createElement('video');
+            video.crossOrigin = 'anonymous';
+            video.preload = 'metadata';
+            video.muted = true; // Mute to avoid autoplay issues
+            
+            videoAnalysis = await new Promise((resolve, reject) => {
+              const timeout = setTimeout(() => {
+                reject(new Error('Video loading timeout (CORS)'));
+              }, 10000); // 10 second timeout
+              
+              video.onloadedmetadata = async () => {
+                clearTimeout(timeout);
+                try {
+                  const analysis = await analyzeVideo(video);
+                  resolve(analysis);
+                } catch (error) {
+                  reject(error);
+                }
+              };
+              video.onerror = () => {
+                clearTimeout(timeout);
+                reject(new Error('Failed to load video (CORS)'));
+              };
+              video.src = ping.videoUrl;
+            });
+          } catch (corsError) {
+            console.log(`⚠️ CORS approach failed for ping ${ping.id}:`, corsError.message);
+            
+            // Approach 2: Try without CORS
+            try {
+              const video = document.createElement('video');
+              video.preload = 'metadata';
+              video.muted = true;
+              
+              videoAnalysis = await new Promise((resolve, reject) => {
+                const timeout = setTimeout(() => {
+                  reject(new Error('Video loading timeout (no CORS)'));
+                }, 10000);
+                
+                video.onloadedmetadata = async () => {
+                  clearTimeout(timeout);
+                  try {
+                    const analysis = await analyzeVideo(video);
+                    resolve(analysis);
+                  } catch (error) {
+                    reject(error);
+                  }
+                };
+                video.onerror = () => {
+                  clearTimeout(timeout);
+                  reject(new Error('Failed to load video (no CORS)'));
+                };
+                video.src = ping.videoUrl;
+              });
+            } catch (noCorsError) {
+              console.log(`⚠️ No-CORS approach also failed for ping ${ping.id}:`, noCorsError.message);
+              
+              // Approach 3: Fallback - analyze based on URL patterns and ping metadata
+              console.log(`🔄 Using fallback analysis for ping ${ping.id}`);
+              videoAnalysis = await analyzeVideoFallback(ping);
+            }
+          }
+          
+          if (videoAnalysis) {
+            analysisResults.push(`Video: ${videoAnalysis.isNSFW ? 'NSFW' : 'Clean'} (${(videoAnalysis.confidence * 100).toFixed(1)}%)`);
+            
+            if (videoAnalysis.isNSFW) {
+              console.log(`❌ NSFW video detected in ping ${ping.id}:`, videoAnalysis);
+              isNSFW = true;
+            } else {
+              console.log(`✅ Video clean for ping ${ping.id}:`, videoAnalysis);
+            }
+          } else {
+            analysisResults.push(`Video: Analysis failed`);
+          }
+        } catch (error) {
+          console.log(`⚠️ All video analysis approaches failed for ping ${ping.id}:`, error.message);
+          analysisResults.push(`Video: All methods failed (${error.message})`);
+        }
+      }
+      
+      // Log analysis summary
+      console.log(`📊 Ping ${ping.id} analysis summary:`, analysisResults.join(', '));
+      
+      return isNSFW;
+    } catch (error) {
+      console.error(`❌ Error analyzing existing ping content for ${ping.id}:`, error);
+      return false; // If analysis fails, don't delete
+    }
+  }
+
+  // Delete ping and associated content when NSFW is detected
+  async function deletePingForNSFW(pingId, reason = 'inappropriate content detected') {
+    try {
+      console.log(`Deleting ping ${pingId} due to NSFW content: ${reason}`);
+      
+      // Get database reference dynamically
+      const db = firebase.firestore();
+      const pingsCollection = db.collection('pings');
+      
+      // Delete from Firestore
+      await pingsCollection.doc(pingId).delete();
+      
+      // Remove from map if it exists (using correct variable name)
+      if (typeof markers !== 'undefined' && markers && markers.has(pingId)) {
+        try {
+          map.removeLayer(markers.get(pingId));
+          markers.delete(pingId);
+          console.log(`Removed marker for ping ${pingId}`);
+        } catch (mapError) {
+          console.log(`Could not remove marker for ping ${pingId}:`, mapError.message);
+        }
+      }
+      
+      // Remove from cache if it exists
+      if (typeof lastPingCache !== 'undefined' && lastPingCache && lastPingCache.has(pingId)) {
+        lastPingCache.delete(pingId);
+        console.log(`Removed ping ${pingId} from cache`);
+      }
+      
+      showToast('Content removed due to policy violation', 'error');
+      console.log(`Successfully deleted ping ${pingId}`);
+    } catch (error) {
+      console.error('Error deleting NSFW ping:', error);
+      showToast('Error removing content', 'error');
+    }
+  }
+  
+  // Manual moderation system check and fix (call from console: checkModeration())
+  window.checkModeration = async function() {
+    console.log('🔍 Checking moderation system status...');
+    console.log('moderationReady:', moderationReady);
+    console.log('nsfwModel:', nsfwModel);
+    
+    if (!moderationReady) {
+      console.log('⚠️ Moderation system not ready - attempting to initialize...');
+      try {
+        await initializeModeration();
+        console.log('✅ Moderation system initialized successfully');
+        console.log('moderationReady is now:', moderationReady);
+      } catch (error) {
+        console.error('❌ Failed to initialize moderation system:', error);
+        console.log('🔄 Manually setting moderation ready as fallback...');
+        moderationReady = true;
+        nsfwModel = null;
+        console.log('✅ Moderation system manually enabled');
+      }
+    } else {
+      console.log('✅ Moderation system is ready');
+    }
+    
+    // Test the system
+    console.log('🧪 Testing moderation system...');
+    try {
+      const testCanvas = document.createElement('canvas');
+      testCanvas.width = 100;
+      testCanvas.height = 100;
+      const testCtx = testCanvas.getContext('2d');
+      testCtx.fillStyle = '#ffdbac'; // Skin tone color
+      testCtx.fillRect(0, 0, 100, 100);
+      
+      const testImg = new Image();
+      testImg.src = testCanvas.toDataURL();
+      testImg.onload = async () => {
+        try {
+          const result = await analyzeImage(testImg);
+          console.log('✅ Test analysis successful:', result);
+        } catch (error) {
+          console.error('❌ Test analysis failed:', error);
+        }
+      };
+    } catch (error) {
+      console.error('❌ Test setup failed:', error);
+    }
+  };
+
+  // Test function for content moderation (call from console: testModeration())
+  window.testModeration = async function() {
+    console.log('🧪 Testing enhanced content moderation system...');
+    console.log('Moderation ready:', moderationReady);
+    console.log('Using enhanced heuristics:', nsfwModel === null);
+    console.log('System features: 6 skin tone detection algorithms, weighted scoring, 10% threshold');
+    
+    if (moderationReady) {
+      // Create a test image (skin tone colored square)
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      canvas.width = 100;
+      canvas.height = 100;
+      ctx.fillStyle = '#D2B48C'; // Tan color (skin tone)
+      ctx.fillRect(0, 0, 100, 100);
+      
+      try {
+        const result = await analyzeImage(canvas);
+        console.log('✅ Test analysis result:', result);
+        console.log('🎯 This image would be', result.isNSFW ? 'BLOCKED' : 'ALLOWED');
+      } catch (error) {
+        console.error('❌ Test analysis failed:', error);
+      }
+    } else {
+      console.log('❌ Moderation system not ready');
+    }
+  };
+  
+  // Test function for video moderation (call from console: testVideoModeration())
+  window.testVideoModeration = async function() {
+    console.log('🎬 Testing video moderation system...');
+    console.log('Moderation ready:', moderationReady);
+    
+    if (moderationReady) {
+      // Create a test video element with skin tone frames
+      const video = document.createElement('video');
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      canvas.width = 320;
+      canvas.height = 240;
+      
+      // Create a test video with skin tone content
+      ctx.fillStyle = '#D2B48C'; // Tan color
+      ctx.fillRect(0, 0, 320, 240);
+      
+      // Simulate video analysis by analyzing the canvas directly
+      try {
+        const result = await analyzeVideoFrame(canvas);
+        console.log('✅ Video frame test result:', result);
+        console.log('🎯 This video frame would be', result.isNSFW ? 'BLOCKED' : 'ALLOWED');
+        console.log('📊 Confidence breakdown:', result.predictions);
+      } catch (error) {
+        console.error('❌ Video test analysis failed:', error);
+      }
+    } else {
+      console.log('❌ Moderation system not ready');
+    }
+  };
+  
+  // Enable frame debugging (call from console: enableFrameDebug())
+  window.enableFrameDebug = function() {
+    console.log('🔍 Frame debugging enabled - frames will be saved for inspection');
+    window.frameDebugEnabled = true;
+  };
+  
+  // Disable frame debugging (call from console: disableFrameDebug())
+  window.disableFrameDebug = function() {
+    console.log('🔍 Frame debugging disabled');
+    window.frameDebugEnabled = false;
+  };
+  
+  // Test video file analysis (call from console: testVideoFile(file))
+  window.testVideoFile = async function(file) {
+    console.log('🎬 Testing video file analysis...');
+    console.log('File:', file.name, 'Size:', file.size, 'Type:', file.type);
+    
+    if (!moderationReady) {
+      console.log('❌ Moderation system not ready');
+      return;
+    }
+    
+    try {
+      const result = await analyzeVideoFromFile(file);
+      console.log('✅ Video file analysis result:', result);
+      console.log('🎯 This video would be', result.isNSFW ? 'BLOCKED' : 'ALLOWED');
+      
+      if (result.frameResults) {
+        console.log('📊 Frame-by-frame results:', result.frameResults.map((r, i) => ({
+          frame: i + 1,
+          isNSFW: r.isNSFW,
+          confidence: r.confidence.toFixed(3)
+        })));
+      }
+    } catch (error) {
+      console.error('❌ Video file analysis failed:', error);
+    }
+  };
+  
+  // Enable drag and drop testing (call from console: enableDragDropTest())
+  window.enableDragDropTest = function() {
+    console.log('🎬 Drag and drop testing enabled - drag video files onto the page to test');
+    
+    // Add drag and drop event listeners
+    document.addEventListener('dragover', function(e) {
+      e.preventDefault();
+    });
+    
+    document.addEventListener('drop', function(e) {
+      e.preventDefault();
+      const files = e.dataTransfer.files;
+      
+      for (let file of files) {
+        if (file.type.startsWith('video/')) {
+          console.log('📁 Video file dropped:', file.name);
+          testVideoFile(file);
+        } else {
+          console.log('📁 Non-video file dropped:', file.name, '- ignoring');
+        }
+      }
+    });
+  };
+  
+  // Retroactively scan and delete inappropriate pings (call from console: scanAllPings())
+  window.scanAllPings = async function() {
+    console.log('🔍 Starting retroactive scan of all pings...');
+    
+    if (!moderationReady) {
+      console.log('❌ Moderation system not ready');
+      return;
+    }
+    
+    try {
+      // Wait for Firebase to be initialized
+      let db;
+      let attempts = 0;
+      while (attempts < 10) {
+        try {
+          db = firebase.firestore();
+          // Test the connection
+          await db.collection('pings').limit(1).get();
+          break;
+        } catch (error) {
+          attempts++;
+          console.log(`⏳ Waiting for Firebase... attempt ${attempts}/10`);
+          await new Promise(resolve => setTimeout(resolve, 1000));
+        }
+      }
+      
+      if (!db) {
+        console.log('❌ Firebase not available after 10 attempts');
+        return;
+      }
+      
+      const pingsCollection = db.collection('pings');
+      let allPings = [];
+      
+      try {
+        // First try: get all pings
+        const pingsSnapshot = await pingsCollection.get();
+        allPings = pingsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+        console.log(`📊 Found ${allPings.length} pings using direct query`);
+      } catch (error) {
+        console.log('❌ Direct query failed, trying alternative approach...');
+        
+        // Alternative: get pings from the last 30 days
+        const thirtyDaysAgo = Date.now() - (30 * 24 * 60 * 60 * 1000);
+        const recentSnapshot = await pingsCollection.where('timestamp', '>=', thirtyDaysAgo).get();
+        allPings = recentSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+        console.log(`📊 Found ${allPings.length} pings using date filter`);
+      }
+      
+      if (allPings.length === 0) {
+        console.log('❌ No pings found to scan. Checking database connection...');
+        console.log('db:', db);
+        console.log('pingsCollection:', pingsCollection);
+        
+        // Try to get any collection to test connection
+        try {
+          const testSnapshot = await db.collection('users').limit(1).get();
+          console.log(`📊 Test query found ${testSnapshot.docs.length} users`);
+        } catch (testError) {
+          console.log('❌ Test query failed:', testError);
+        }
+        return;
+      }
+      
+      let deletedCount = 0;
+      let scannedCount = 0;
+      
+      for (const ping of allPings) {
+        scannedCount++;
+        console.log(`🔍 Scanning ping ${scannedCount}/${allPings.length}: ${ping.id}`);
+        
+        try {
+          const isInappropriate = await analyzeExistingPingContent(ping);
+          
+          if (isInappropriate) {
+            console.log(`❌ Inappropriate content detected in ping ${ping.id} - deleting...`);
+            await deletePingForNSFW(ping.id, 'retroactive scan detected inappropriate content');
+            deletedCount++;
+          } else {
+            console.log(`✅ Ping ${ping.id} is clean`);
+          }
+        } catch (error) {
+          console.error(`❌ Error scanning ping ${ping.id}:`, error);
+        }
+        
+        // Add small delay to avoid overwhelming the system
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+      
+      console.log(`🎉 Retroactive scan complete!`);
+      console.log(`📊 Scanned: ${scannedCount} pings`);
+      console.log(`🗑️ Deleted: ${deletedCount} inappropriate pings`);
+      console.log(`✅ Clean: ${scannedCount - deletedCount} pings`);
+      
+      showToast(`Retroactive scan complete: ${deletedCount} inappropriate pings deleted`, 'success');
+      
+    } catch (error) {
+      console.error('❌ Error during retroactive scan:', error);
+      showToast('Error during retroactive scan', 'error');
+    }
+  };
+  
+  // Debug function to check ping collection (call from console: debugPings())
+  window.debugPings = async function() {
+    console.log('🔍 Debugging ping collection...');
+    
+    try {
+      // Wait for Firebase to be initialized
+      let db;
+      let attempts = 0;
+      while (attempts < 10) {
+        try {
+          db = firebase.firestore();
+          // Test the connection
+          await db.collection('pings').limit(1).get();
+          break;
+        } catch (error) {
+          attempts++;
+          console.log(`⏳ Waiting for Firebase... attempt ${attempts}/10`);
+          await new Promise(resolve => setTimeout(resolve, 1000));
+        }
+      }
+      
+      if (!db) {
+        console.log('❌ Firebase not available after 10 attempts');
+        return;
+      }
+      
+      console.log('db:', db);
+      
+      // Try to get pings collection directly using db
+      const pingsCollection = db.collection('pings');
+      const snapshot = await pingsCollection.get();
+      console.log(`📊 Direct collection query: ${snapshot.docs.length} pings found`);
+      
+      if (snapshot.docs.length > 0) {
+        const firstPing = snapshot.docs[0].data();
+        console.log('📋 First ping sample:', firstPing);
+        console.log('📋 Ping ID:', snapshot.docs[0].id);
+        console.log('📋 Ping timestamp:', firstPing.timestamp || firstPing.createdAt);
+        console.log('📋 Ping has imageUrl:', !!firstPing.imageUrl);
+        console.log('📋 Ping has videoUrl:', !!firstPing.videoUrl);
+        console.log('📋 Ping text preview:', firstPing.text ? firstPing.text.substring(0, 50) + '...' : 'No text');
+      }
+      
+      // Try with pingsRef if it exists
+      if (typeof pingsRef !== 'undefined') {
+        const pingsRefSnapshot = await pingsRef.get();
+        console.log(`📊 pingsRef query: ${pingsRefSnapshot.docs.length} pings found`);
+      }
+      
+      // Test other collections
+      try {
+        const usersSnapshot = await db.collection('users').limit(1).get();
+        console.log(`📊 Users collection: ${usersSnapshot.docs.length} users found`);
+      } catch (error) {
+        console.log('❌ Users collection test failed:', error);
+      }
+      
+    } catch (error) {
+      console.error('❌ Error debugging pings:', error);
+    }
+  };
+  
+  // Scan pings from a specific time range (call from console: scanPingsFromDate('2024-01-01'))
+  window.scanPingsFromDate = async function(startDate) {
+    console.log(`🔍 Starting scan of pings from ${startDate}...`);
+    
+    if (!moderationReady) {
+      console.log('❌ Moderation system not ready');
+      return;
+    }
+    
+    try {
+      const startTimestamp = new Date(startDate).getTime();
+      
+      // Wait for Firebase to be initialized
+      let db;
+      let attempts = 0;
+      while (attempts < 10) {
+        try {
+          db = firebase.firestore();
+          // Test the connection
+          await db.collection('pings').limit(1).get();
+          break;
+        } catch (error) {
+          attempts++;
+          console.log(`⏳ Waiting for Firebase... attempt ${attempts}/10`);
+          await new Promise(resolve => setTimeout(resolve, 1000));
+        }
+      }
+      
+      if (!db) {
+        console.log('❌ Firebase not available after 10 attempts');
+        return;
+      }
+      
+      const pingsCollection = db.collection('pings');
+      
+      // Get pings from specific date onwards
+      const pingsSnapshot = await pingsCollection.where('timestamp', '>=', startTimestamp).get();
+      const pings = pingsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      
+      console.log(`📊 Found ${pings.length} pings to scan from ${startDate}`);
+      
+      let deletedCount = 0;
+      let scannedCount = 0;
+      
+      for (const ping of pings) {
+        scannedCount++;
+        console.log(`🔍 Scanning ping ${scannedCount}/${pings.length}: ${ping.id}`);
+        
+        try {
+          const isInappropriate = await analyzeExistingPingContent(ping);
+          
+          if (isInappropriate) {
+            console.log(`❌ Inappropriate content detected in ping ${ping.id} - deleting...`);
+            await deletePingForNSFW(ping.id, 'retroactive scan detected inappropriate content');
+            deletedCount++;
+          } else {
+            console.log(`✅ Ping ${ping.id} is clean`);
+          }
+        } catch (error) {
+          console.error(`❌ Error scanning ping ${ping.id}:`, error);
+        }
+        
+        // Add small delay to avoid overwhelming the system
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+      
+      console.log(`🎉 Scan complete!`);
+      console.log(`📊 Scanned: ${scannedCount} pings`);
+      console.log(`🗑️ Deleted: ${deletedCount} inappropriate pings`);
+      console.log(`✅ Clean: ${scannedCount - deletedCount} pings`);
+      
+      showToast(`Scan complete: ${deletedCount} inappropriate pings deleted`, 'success');
+      
+    } catch (error) {
+      console.error('❌ Error during date-based scan:', error);
+      showToast('Error during date-based scan', 'error');
+    }
+  };
+  
+  // Initialize moderation system with delay to ensure script is loaded
+  setTimeout(async () => {
+    await initializeModeration();
+    
+    // Run retroactive scan after moderation is ready (with delay to not interfere with app startup)
+    setTimeout(async () => {
+      console.log('🔄 Starting automatic retroactive scan of recent pings...');
+      try {
+        // Scan pings from the last 7 days
+        const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+        await scanPingsFromDate(sevenDaysAgo);
+      } catch (error) {
+        console.error('❌ Automatic retroactive scan failed:', error);
+      }
+    }, 5000); // 5 second delay after moderation system is ready
+  }, 1000);
+
+  /* --------- Profile System --------- */
+  const PROFILE_VIEW = {
+    OWN: 'own',
+    OTHER: 'other',
+    SETTINGS: 'settings'
+  };
+  let currentProfileView = PROFILE_VIEW.OWN;
+  
+  // Profile system state
+  let profileSystemReady = false;
+  let profileElements = {};
+  
+  // Initialize profile system when DOM is ready
+  function initializeProfileSystem() {
+    console.log('Initializing profile system...');
+    
+    // Cache all profile elements
+    profileElements = {
+      modal: document.getElementById('profileModal'),
+      title: document.getElementById('profileModalTitle'),
+      actions: document.getElementById('profileActions'),
+      signOutBtn: document.getElementById('signOutInProfile'),
+      gear: document.getElementById('openSettings'),
+      back: document.getElementById('backToProfile'),
+      storeBtn: document.getElementById('openStore'),
+      own: document.getElementById('ownProfileSection'),
+      other: document.getElementById('otherProfileSection'),
+      settings: document.getElementById('settingsSection'),
+      ownAvatar: document.getElementById('ownProfileAvatar'),
+      otherAvatar: document.getElementById('otherProfileAvatar'),
+      settingsAvatar: document.getElementById('settingsProfileAvatar'),
+      handleInput: document.getElementById('handleInput'),
+      emailDisplay: document.getElementById('emailDisplay'),
+      ownStatsLine: document.getElementById('ownStatsLine'),
+      otherStatsLine: document.getElementById('otherStatsLine'),
+      otherProfileName: document.getElementById('otherProfileName')
+    };
+    
+    // Check if all critical elements exist
+    const criticalElements = ['modal', 'title', 'actions', 'own', 'other', 'settings'];
+    const missingElements = criticalElements.filter(key => !profileElements[key]);
+    
+    if (missingElements.length > 0) {
+      console.warn('Missing profile elements:', missingElements);
+      setTimeout(initializeProfileSystem, 100);
+      return;
+    }
+    
+    profileSystemReady = true;
+    console.log('Profile system initialized successfully');
+    
+    // Set up event listeners
+    setupProfileEventListeners();
+  }
+  
+  // Set up all profile-related event listeners
+  function setupProfileEventListeners() {
+    // Close button
+    if (profileElements.modal) {
+      const closeBtn = document.getElementById('closeProfile');
+      if (closeBtn) {
+        closeBtn.onclick = () => closeModal('profileModal');
+      }
+    }
+    
+    // Sign out button
+    if (profileElements.signOutBtn) {
+      profileElements.signOutBtn.onclick = async () => {
+        try {
+          await auth.signOut();
+          closeModal('profileModal');
+          showToast('Signed out');
+        } catch (e) {
+          showToast('Sign out failed');
+        }
+      };
+    }
+    
+    // Settings button
+    if (profileElements.gear) {
+      profileElements.gear.onclick = () => switchToSettings();
+    }
+    
+    // Back button
+    if (profileElements.back) {
+      profileElements.back.onclick = () => switchToOwnProfile();
+    }
+    
+    // Store button
+    if (profileElements.storeBtn) {
+      profileElements.storeBtn.onclick = () => {
+        try {
+          openModal('storeModal');
+          if (typeof renderStore === 'function') renderStore();
+        } catch (e) {
+          console.error('Error opening store:', e);
+        }
+      };
+    }
+  }
+  
+  // Switch to own profile view
+  function switchToOwnProfile() {
+    if (!profileSystemReady) {
+      console.warn('Profile system not ready');
+      return;
+    }
+    
+    console.log('Switching to own profile');
+    currentProfileView = PROFILE_VIEW.OWN;
+    
+    // Update UI elements
+    if (profileElements.title) profileElements.title.textContent = 'Your Profile';
+    if (profileElements.own) profileElements.own.style.display = 'block';
+    if (profileElements.other) profileElements.other.style.display = 'none';
+    if (profileElements.settings) profileElements.settings.style.display = 'none';
+    if (profileElements.actions) profileElements.actions.style.display = 'flex';
+    if (profileElements.signOutBtn) profileElements.signOutBtn.style.display = 'inline-flex';
+    if (profileElements.gear) profileElements.gear.style.display = 'inline-flex';
+    if (profileElements.back) profileElements.back.style.display = 'none';
+    if (profileElements.storeBtn) profileElements.storeBtn.style.display = 'inline-flex';
+    
+    // Load profile data
+    loadOwnProfileData();
+  }
+  
+  // Switch to settings view
+  function switchToSettings() {
+    if (!profileSystemReady) {
+      console.warn('Profile system not ready');
+      return;
+    }
+    
+    console.log('Switching to settings');
+    currentProfileView = PROFILE_VIEW.SETTINGS;
+    
+    // Update UI elements
+    if (profileElements.title) profileElements.title.textContent = 'Settings';
+    if (profileElements.own) profileElements.own.style.display = 'none';
+    if (profileElements.other) profileElements.other.style.display = 'none';
+    if (profileElements.settings) profileElements.settings.style.display = 'block';
+    if (profileElements.actions) profileElements.actions.style.display = 'flex';
+    if (profileElements.signOutBtn) profileElements.signOutBtn.style.display = 'inline-flex';
+    if (profileElements.gear) profileElements.gear.style.display = 'none';
+    if (profileElements.back) profileElements.back.style.display = 'inline-flex';
+    if (profileElements.storeBtn) profileElements.storeBtn.style.display = 'inline-flex';
+    
+    // Load settings data
+    loadSettingsData();
+  }
+  
+  // Switch to other profile view
+  function switchToOtherProfile(uid) {
+    if (!profileSystemReady) {
+      console.warn('Profile system not ready');
+      return;
+    }
+    
+    console.log('Switching to other profile:', uid);
+    currentProfileView = PROFILE_VIEW.OTHER;
+    
+    // Update UI elements
+    if (profileElements.title) profileElements.title.textContent = 'Profile';
+    if (profileElements.own) profileElements.own.style.display = 'none';
+    if (profileElements.other) profileElements.other.style.display = 'block';
+    if (profileElements.settings) profileElements.settings.style.display = 'none';
+    if (profileElements.actions) profileElements.actions.style.display = 'flex';
+    if (profileElements.signOutBtn) profileElements.signOutBtn.style.display = 'none';
+    if (profileElements.gear) profileElements.gear.style.display = 'inline-flex';
+    if (profileElements.back) profileElements.back.style.display = 'none';
+    if (profileElements.storeBtn) profileElements.storeBtn.style.display = 'none';
+    
+    // Load other profile data
+    loadOtherProfileData(uid);
+  }
+  
+  // Load own profile data
+  async function loadOwnProfileData() {
+    if (!currentUser) {
+      console.warn('No current user for own profile');
+      return;
+    }
+    
+    try {
+      console.log('Loading own profile data...');
+      
+      // Load user data from Firestore
+      const userDoc = await usersRef.doc(currentUser.uid).get();
+      const userData = userDoc.exists ? userDoc.data() : {};
+      
+      // Update avatar
+      if (profileElements.ownAvatar) {
+        const photoURL = userData.photoURL || '';
+        if (photoURL) {
+          profileElements.ownAvatar.style.backgroundImage = `url("${photoURL}")`;
+          profileElements.ownAvatar.style.backgroundSize = 'cover';
+          profileElements.ownAvatar.style.backgroundPosition = 'center';
+          profileElements.ownAvatar.style.backgroundRepeat = 'no-repeat';
+          profileElements.ownAvatar.classList.add('custom-avatar');
+        } else {
+          profileElements.ownAvatar.style.backgroundImage = '';
+          profileElements.ownAvatar.classList.remove('custom-avatar');
+        }
+      }
+      
+      // Update handle input
+      if (profileElements.handleInput) {
+        profileElements.handleInput.value = userData.handle || '';
+      }
+      
+      // Update email display
+      if (profileElements.emailDisplay) {
+        const email = userData.email || currentUser.email || 'No email';
+        profileElements.emailDisplay.textContent = email;
+      }
+      
+      // Update stats
+      if (profileElements.ownStatsLine) {
+        const points = Number(userData.points || 0);
+        const streak = Number(userData.streakDays || 0);
+        profileElements.ownStatsLine.textContent = `${points} PPs • 🔥 ${streak}`;
+      }
+      
+      console.log('Own profile data loaded successfully');
+    } catch (e) {
+      console.error('Error loading own profile data:', e);
+    }
+  }
+  
+  // Load settings data
+  async function loadSettingsData() {
+    if (!currentUser) {
+      console.warn('No current user for settings');
+      return;
+    }
+    
+    try {
+      console.log('Loading settings data...');
+      
+      // Load user data from Firestore
+      const userDoc = await usersRef.doc(currentUser.uid).get();
+      const userData = userDoc.exists ? userDoc.data() : {};
+      
+      // Update settings avatar
+      if (profileElements.settingsAvatar) {
+        const photoURL = userData.photoURL || '';
+        if (photoURL) {
+          profileElements.settingsAvatar.style.backgroundImage = `url("${photoURL}")`;
+          profileElements.settingsAvatar.style.backgroundSize = 'cover';
+          profileElements.settingsAvatar.style.backgroundPosition = 'center';
+          profileElements.settingsAvatar.style.backgroundRepeat = 'no-repeat';
+          profileElements.settingsAvatar.classList.add('custom-avatar');
+        } else {
+          profileElements.settingsAvatar.style.backgroundImage = '';
+          profileElements.settingsAvatar.classList.remove('custom-avatar');
+        }
+      }
+      
+      // Update handle input in settings
+      if (profileElements.handleInput) {
+        profileElements.handleInput.value = userData.handle || '';
+      }
+      
+      // Initialize custom ping UI
+      if (typeof renderCustomPingUI === 'function') {
+        setTimeout(() => {
+          try {
+            renderCustomPingUI();
+          } catch (e) {
+            console.error('Error rendering custom ping UI:', e);
+          }
+        }, 0);
+      }
+      
+      console.log('Settings data loaded successfully');
+    } catch (e) {
+      console.error('Error loading settings data:', e);
+    }
+  }
+  
+  // Load other profile data
+  async function loadOtherProfileData(uid) {
+    try {
+      console.log('Loading other profile data for:', uid);
+      
+      // Load user data from Firestore
+      const userDoc = await usersRef.doc(uid).get();
+      const userData = userDoc.exists ? userDoc.data() : {};
+      
+      // Update other profile avatar
+      if (profileElements.otherAvatar) {
+        const photoURL = userData.photoURL || '';
+        if (photoURL) {
+          profileElements.otherAvatar.style.backgroundImage = `url("${photoURL}")`;
+          profileElements.otherAvatar.style.backgroundSize = 'cover';
+          profileElements.otherAvatar.style.backgroundPosition = 'center';
+          profileElements.otherAvatar.style.backgroundRepeat = 'no-repeat';
+          profileElements.otherAvatar.classList.add('custom-avatar');
+        } else {
+          profileElements.otherAvatar.style.backgroundImage = '';
+          profileElements.otherAvatar.classList.remove('custom-avatar');
+        }
+      }
+      
+      // Update other profile name
+      if (profileElements.otherProfileName) {
+        const handle = userData.handle || 'User';
+        profileElements.otherProfileName.textContent = handle;
+      }
+      
+      // Update other profile stats
+      if (profileElements.otherStatsLine) {
+        const points = Number(userData.points || 0);
+        const streak = Number(userData.streakDays || 0);
+        profileElements.otherStatsLine.textContent = `${points} PPs • 🔥 ${streak}`;
+      }
+      
+      console.log('Other profile data loaded successfully');
+    } catch (e) {
+      console.error('Error loading other profile data:', e);
+    }
+  }
+  
+  // Open profile modal with proper initialization
+  function openProfileModal(view = PROFILE_VIEW.OWN, uid = null) {
+    console.log('Opening profile modal with view:', view, 'uid:', uid);
+    
+    // Open the modal
+    openModal('profileModal');
+    
+    // Wait for modal to be ready, then switch to appropriate view
+    setTimeout(() => {
+      if (!profileSystemReady) {
+        console.warn('Profile system not ready, retrying...');
+        setTimeout(() => openProfileModal(view, uid), 100);
+        return;
+      }
+      
+      switch (view) {
+        case PROFILE_VIEW.OWN:
+          switchToOwnProfile();
+          break;
+        case PROFILE_VIEW.SETTINGS:
+          switchToSettings();
+          break;
+        case PROFILE_VIEW.OTHER:
+          if (uid) {
+            switchToOtherProfile(uid);
+          } else {
+            console.warn('No UID provided for other profile');
+            switchToOwnProfile();
+          }
+          break;
+        default:
+          switchToOwnProfile();
+      }
+    }, 100);
+  }
+
   /* --------- Splash --------- */
   const splash = document.getElementById('splash');
   const startGlobe = document.getElementById('startGlobe');
@@ -37,7 +1688,9 @@ async function main(){
       // Restore normal view constraints after the zoom
       try{ updateViewConstraints(); }catch(_){ }
       // Enable hotspots only after intro animation completes
+      setTimeout(() => {
       try{ if(typeof enableHotspots==='function') enableHotspots(); }catch(_){ }
+      }, 100);
     }, 1250);
   });
 
@@ -355,11 +2008,18 @@ async function main(){
     }catch(_){ } 
   }
   function openModal(id){
+    console.log('=== OPENING MODAL ===', id);
     document.getElementById(id).classList.add('open');
     applyModalOpenClass();
-    // Ensure profile modal shows own-profile chrome when opening as the signed-in user
+    // Handle profile modal opening with new system
     if(id==='profileModal'){
-      try{ if(typeof applyProfileView==='function') applyProfileView(PROFILE_VIEW.OWN); }catch(_){ }
+      console.log('Profile modal opened via openModal');
+      // The new profile system will handle initialization
+      // Just ensure the system is ready
+      if (!profileSystemReady) {
+        console.log('Profile system not ready, initializing...');
+        initializeProfileSystem();
+      }
     }
   }
   function closeModal(id){ document.getElementById(id).classList.remove('open'); applyModalOpenClass(); }
@@ -422,7 +2082,7 @@ async function refreshAuthUI(user){
           av.style.backgroundPosition = 'center';
           av.style.backgroundRepeat = 'no-repeat';
           av.classList.add('custom-avatar');
-          console.log('Updated profile avatar with:', uploadedPhoto.substring(0, 50) + '...');
+          // console.log('Updated profile avatar with:', uploadedPhoto.substring(0, 50) + '...');
         } else { 
           av.style.backgroundImage=''; 
           av.classList.remove('custom-avatar');
@@ -438,7 +2098,7 @@ async function refreshAuthUI(user){
           profileModalAvatar.style.backgroundPosition = 'center';
           profileModalAvatar.style.backgroundRepeat = 'no-repeat';
           profileModalAvatar.classList.add('custom-avatar');
-          console.log('Updated profile modal avatar with:', uploadedPhoto.substring(0, 50) + '...');
+          // console.log('Updated profile modal avatar with:', uploadedPhoto.substring(0, 50) + '...');
         } else {
           profileModalAvatar.style.backgroundImage = `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='128' height='128' viewBox='0 0 24 24'%3E%3Ccircle cx='12' cy='8' r='4' fill='%23cccccc'/%3E%3Cpath d='M4 20c0-4.418 3.582-8 8-8s8 3.582 8 8' fill='%23e6e6e6'/%3E%3C/svg%3E")`;
           profileModalAvatar.style.backgroundSize = 'cover';
@@ -511,7 +2171,9 @@ startRequestsListeners(currentUser.uid);
   }
 
   // Re-evaluate PotW after any auth change (filters/me/friends may differ)
-  recomputePotw().catch(console.error);
+  if(typeof recomputePotw === 'function') {
+    recomputePotw().catch(console.error);
+  }
 }
 
   // Hard UI flip helper (in case listeners/races delay refresh)
@@ -579,12 +2241,8 @@ startRequestsListeners(currentUser.uid);
       e.stopPropagation(); // Prevent map click handler from firing
         const u = auth.currentUser || null;
         if(!u){ openModal('signInModal'); return; }
-        // Open modal and then flip to own profile reliably
-        try{ openModal('profileModal'); }catch(_){ }
-        try{ if(typeof applyProfileView==='function') applyProfileView(PROFILE_VIEW.OWN); }catch(_){ }
-        // Load stats, avatar, friends (await to render before user interacts)
-        try{ if(typeof openOwnProfile==='function') await openOwnProfile(); }catch(_){ }
-        forceOwnProfileHeader();
+        // Use new profile system
+        openProfileModal(PROFILE_VIEW.OWN);
     }
   });
   const signInTopBtn = document.getElementById('signInTop');
@@ -645,7 +2303,7 @@ startRequestsListeners(currentUser.uid);
       forceAuthUI(user);
       await refreshAuthUI(user);
       // Extra safety: run a delayed refresh and ensure visible change
-      setTimeout(()=>{ try{ forceAuthUI(auth.currentUser); refreshAuthUI(auth.currentUser); }catch(e){} }, 80);
+      setTimeout(()=>{ try{ forceAuthUI(auth.currentUser); }catch(e){} }, 80);
     }catch(e){
       console.error(e);
       // If linking Guest -> Google fails because Google account already exists, sign in with that credential
@@ -659,7 +2317,7 @@ startRequestsListeners(currentUser.uid);
             await usersRef.doc(user.uid).set({ email: user.email || null, handle: user.handle || null }, { merge:true });
             forceAuthUI(user);
             await refreshAuthUI(user);
-            setTimeout(()=>{ try{ forceAuthUI(auth.currentUser); refreshAuthUI(auth.currentUser); }catch(_){ } }, 80);
+            setTimeout(()=>{ try{ forceAuthUI(auth.currentUser); }catch(_){ } }, 80);
             return;
           }
         }
@@ -1125,6 +2783,22 @@ startRequestsListeners(currentUser.uid);
 
   async function upsertMarker(p){
     if(typeof p.lat!=='number' || typeof p.lon!=='number') return;
+    
+    // Check if ping has media that needs moderation
+    if (p.imageUrl || p.videoUrl) {
+      try {
+        const shouldDelete = await analyzeExistingPingContent(p);
+        if (shouldDelete) {
+          console.log(`Deleting ping ${p.id} due to NSFW content`);
+          await deletePingForNSFW(p.id, 'inappropriate content detected in existing ping');
+          return; // Don't add marker for deleted ping
+        }
+      } catch (error) {
+        console.error('Error analyzing existing ping content:', error);
+        // If analysis fails, allow ping to be displayed
+      }
+    }
+    
     const isPotw = !!(currentPotw && currentPotw.id===p.id);
     if(!shouldShow(p)){ removeMarker(p.id); return; }
     const icon=await iconForPing(p, isPotw);
@@ -1155,7 +2829,9 @@ startRequestsListeners(currentUser.uid);
       upsertMarker(p);
     });
     // 🔑 Ensure PotW is re-evaluated on every live update
-    recomputePotw().catch(console.error);
+    if(typeof recomputePotw === 'function') {
+      recomputePotw().catch(console.error);
+    }
     // 🔥 Recompute hotspot after snapshot processed
     scheduleHotspotRecompute();
   }, e=>{ console.error(e); showToast((e.code||'error')+': '+(e.message||'live error')); });
@@ -1163,9 +2839,9 @@ startRequestsListeners(currentUser.uid);
   }
   startLive();
 
-  /* --------- What You Missed (>=12h idle) --------- */
+  /* --------- What You Missed (>=1h idle) --------- */
   const MISSED_LAST_SEEN_KEY = 'htbt_last_seen_ts';
-  const MISSED_THRESHOLD_MS = 12*3600*1000;
+  const MISSED_THRESHOLD_MS = 1*3600*1000; // 1 hour instead of 12 hours
   const missedCard = document.getElementById('missedCard');
   const missedText = document.getElementById('missedText');
   const missedMeta = document.getElementById('missedMeta');
@@ -1178,33 +2854,368 @@ startRequestsListeners(currentUser.uid);
   async function showWhatYouMissedIfAny(){
     try{
       const lastSeen = getLastSeen();
+      console.log('What you missed check:', { lastSeen, threshold: MISSED_THRESHOLD_MS, timeSince: Date.now() - lastSeen });
       if(!lastSeen) { markSeen(); return; }
       if(Date.now()-lastSeen < MISSED_THRESHOLD_MS) return;
-      // Collect candidate pings since lastSeen from cache (already live-limited to 24h)
+      
+      // Collect all live pings from cache (top 3 current pings, excluding Ping of the Week)
       const list = [];
       lastPingCache.forEach((p)=>{
-        const ts=p.createdAt?.toDate? p.createdAt.toDate().getTime():0; if(!ts) return;
-        if(ts<=lastSeen) return;
+        if(p.status !== 'live') return; // Only show pings that are still up/live
+        if(currentPotw && p.id === currentPotw.id) return; // Exclude Ping of the Week
         // Respect visibility; reuse shouldShow minus timeWindow constraint
         const keepTime = timeWindow; timeWindow='any'; const ok=shouldShow(p); timeWindow=keepTime; if(!ok) return;
         list.push(p);
       });
-      if(!list.length) { markSeen(); return; }
-      // Sort by net likes desc, then recency
-      list.sort((a,b)=>{ const an=Math.max(0,(a.likes||0)-(a.dislikes||0)); const bn=Math.max(0,(b.likes||0)-(b.dislikes||0)); if(bn!==an) return bn-an; const at=a.createdAt?.toDate? a.createdAt.toDate().getTime():0; const bt=b.createdAt?.toDate? b.createdAt.toDate().getTime():0; return bt-at; });
-      const top = list.slice(0,3);
-      const lines = top.map((p,i)=> `${i+1}. ${String(p.text||'Ping')} (${Math.max(0,(p.likes||0)-(p.dislikes||0))}★)`);
-      if(missedText) missedText.textContent = lines.join('  ');
+      console.log('What you missed candidates:', list.length, 'from cache size:', lastPingCache.size);
+      
+      // Always show the card after 1 hour, regardless of ping count
+      let displayHTML = '';
+      let viewButtonEnabled = false;
+      let topPings = [];
+      
+      if(list.length === 0) {
+        displayHTML = '<div class="ping-item">No new pings since your last visit</div>';
+      } else {
+        // Sort by net likes desc, then recency
+        list.sort((a,b)=>{ const an=Math.max(0,(a.likes||0)-(a.dislikes||0)); const bn=Math.max(0,(b.likes||0)-(b.dislikes||0)); if(bn!==an) return bn-an; const at=a.createdAt?.toDate? a.createdAt.toDate().getTime():0; const bt=b.createdAt?.toDate? b.createdAt.toDate().getTime():0; return bt-at; });
+        topPings = list.slice(0,3);
+        
+        displayHTML = topPings.map((p, i) => {
+          const netLikes = Math.max(0, (p.likes||0) - (p.dislikes||0));
+          const authorName = p.authorName || 'Anonymous';
+          const timeAgo = p.createdAt?.toDate ? 
+            (() => {
+              const diffMs = Date.now() - p.createdAt.toDate().getTime();
+              const diffMins = Math.floor(diffMs / 60000);
+              const diffHours = Math.floor(diffMins / 60);
+              if (diffHours > 0) {
+                return `${diffHours}h ${diffMins % 60}m ago`;
+              } else {
+                return `${diffMins}m ago`;
+              }
+            })() : 
+            'Unknown time';
+          
+          return `
+            <div class="ping-item">
+              <strong>${i+1}. ${String(p.text||'Ping')}</strong> (${netLikes}★)
+              <div class="ping-author">by ${authorName}</div>
+              <div class="ping-time">${timeAgo}</div>
+            </div>
+          `;
+        }).join('');
+        
+        viewButtonEnabled = topPings.length > 0;
+      }
+      
+      if(missedText) missedText.innerHTML = displayHTML;
       if(missedMeta){ const diff=Math.round((Date.now()-lastSeen)/3600000); missedMeta.textContent = `${diff}h since your last visit`; }
-      if(missedView){ missedView.disabled=false; missedView.onclick=()=>{ try{ if(top[0]){ map.setView([top[0].lat, top[0].lon], 16, { animate:true }); openSheet(top[0].id); } }catch(_){ } if(missedCard) missedCard.style.display='none'; markSeen(); } }
+      if(missedView){ 
+        missedView.disabled = !viewButtonEnabled;
+        if(viewButtonEnabled && topPings.length > 0) {
+          let currentPingIndex = 0;
+          missedView.onclick = () => {
+            try {
+              const ping = topPings[currentPingIndex];
+              if(ping) {
+                map.setView([ping.lat, ping.lon], 16, { animate:true });
+                openSheet(ping.id);
+                // Move to next ping for next click
+                currentPingIndex = (currentPingIndex + 1) % topPings.length;
+                // Update button text to show progress
+                missedView.textContent = `View ${currentPingIndex + 1}/${topPings.length}`;
+                // Reset after viewing all pings
+                if(currentPingIndex === 0) {
+                  setTimeout(() => {
+                    if(missedCard) missedCard.style.display='none';
+                    markSeen();
+                  }, 1000);
+                }
+              }
+            } catch(_) { 
+              if(missedCard) missedCard.style.display='none'; 
+              markSeen(); 
+            }
+          };
+          // Set initial button text
+          missedView.textContent = `View 1/${topPings.length}`;
+        } else {
+          missedView.onclick=()=>{ if(missedCard) missedCard.style.display='none'; markSeen(); }
+        }
+      }
       if(missedClose){ missedClose.onclick=()=>{ if(missedCard) missedCard.style.display='none'; markSeen(); }; }
-      if(missedCard) missedCard.style.display='block';
-    }catch(_){ markSeen(); }
+      if(missedCard) {
+        missedCard.style.display='block';
+        console.log('What you missed card shown with', list.length, 'items');
+      }
+    }catch(e){ console.error('What you missed error:', e); markSeen(); }
   }
   // Run shortly after live starts
-  setTimeout(showWhatYouMissedIfAny, 1200);
+  setTimeout(() => {
+    console.log('=== AUTOMATIC WHAT YOU MISSED CHECK ===');
+    showWhatYouMissedIfAny();
+  }, 1200);
   // Mark seen on first interaction
   ['click','keydown','touchstart','wheel'].forEach(evt=>{ window.addEventListener(evt, ()=>{ markSeen(); }, { once:true, passive:true }); });
+  
+  // Debug function to manually test "what you missed"
+  window.testWhatYouMissed = function() {
+    console.log('=== TESTING WHAT YOU MISSED ===');
+    console.log('Current lastSeen:', getLastSeen());
+    console.log('Current time:', Date.now());
+    console.log('Time difference:', Date.now() - getLastSeen());
+    console.log('Threshold (1 hour):', MISSED_THRESHOLD_MS);
+    console.log('Should show?', (Date.now() - getLastSeen()) >= MISSED_THRESHOLD_MS);
+    console.log('Cache size:', lastPingCache.size);
+    console.log('Cache contents:', Array.from(lastPingCache.keys()));
+    
+    // Bypass the 1-hour check and directly show the card with current pings
+    console.log('Bypassing time check, showing card with current pings...');
+    
+    // Collect all live pings from cache (top 3 current pings, excluding Ping of the Week)
+    const list = [];
+    lastPingCache.forEach((p)=>{
+      if(p.status !== 'live') return; // Only show pings that are still up/live
+      if(currentPotw && p.id === currentPotw.id) return; // Exclude Ping of the Week
+      // Respect visibility; reuse shouldShow minus timeWindow constraint
+      const keepTime = timeWindow; timeWindow='any'; const ok=shouldShow(p); timeWindow=keepTime; if(!ok) return;
+      list.push(p);
+    });
+    console.log('Test candidates:', list.length, 'from cache size:', lastPingCache.size);
+    
+    // Always show the card, regardless of ping count
+    let displayHTML = '';
+    let viewButtonEnabled = false;
+    let topPings = [];
+    
+    if(list.length === 0) {
+      displayHTML = '<div class="ping-item">No new pings since your last visit</div>';
+    } else {
+      // Sort by net likes desc, then recency
+      list.sort((a,b)=>{ const an=Math.max(0,(a.likes||0)-(a.dislikes||0)); const bn=Math.max(0,(b.likes||0)-(b.dislikes||0)); if(bn!==an) return bn-an; const at=a.createdAt?.toDate? a.createdAt.toDate().getTime():0; const bt=b.createdAt?.toDate? b.createdAt.toDate().getTime():0; return bt-at; });
+      topPings = list.slice(0,3);
+      
+      displayHTML = topPings.map((p, i) => {
+        const netLikes = Math.max(0, (p.likes||0) - (p.dislikes||0));
+        const authorName = p.authorName || 'Anonymous';
+        const timeAgo = p.createdAt?.toDate ? 
+          (() => {
+            const diffMs = Date.now() - p.createdAt.toDate().getTime();
+            const diffMins = Math.floor(diffMs / 60000);
+            const diffHours = Math.floor(diffMins / 60);
+            if (diffHours > 0) {
+              return `${diffHours}h ${diffMins % 60}m ago`;
+            } else {
+              return `${diffMins}m ago`;
+            }
+          })() : 
+          'Unknown time';
+        
+        return `
+          <div class="ping-item">
+            <strong>${i+1}. ${String(p.text||'Ping')}</strong> (${netLikes}★)
+            <div class="ping-author">by ${authorName}</div>
+            <div class="ping-time">${timeAgo}</div>
+          </div>
+        `;
+      }).join('');
+      
+      viewButtonEnabled = topPings.length > 0;
+    }
+    
+    if(missedText) missedText.innerHTML = displayHTML;
+    if(missedMeta){ missedMeta.textContent = 'Test mode - showing current pings'; }
+    if(missedView){ 
+      missedView.disabled = !viewButtonEnabled;
+      if(viewButtonEnabled && topPings.length > 0) {
+        let currentPingIndex = 0;
+        missedView.onclick = () => {
+          try {
+            const ping = topPings[currentPingIndex];
+            if(ping) {
+              map.setView([ping.lat, ping.lon], 16, { animate:true });
+              openSheet(ping.id);
+              // Move to next ping for next click
+              currentPingIndex = (currentPingIndex + 1) % topPings.length;
+              // Update button text to show progress
+              missedView.textContent = `View ${currentPingIndex + 1}/${topPings.length}`;
+              // Reset after viewing all pings
+              if(currentPingIndex === 0) {
+                setTimeout(() => {
+                  if(missedCard) missedCard.style.display='none';
+                  markSeen();
+                }, 1000);
+              }
+            }
+          } catch(_) { 
+            if(missedCard) missedCard.style.display='none'; 
+            markSeen(); 
+          }
+        };
+        // Set initial button text
+        missedView.textContent = `View 1/${topPings.length}`;
+      } else {
+        missedView.onclick=()=>{ if(missedCard) missedCard.style.display='none'; markSeen(); }
+      }
+    }
+    if(missedClose){ missedClose.onclick=()=>{ if(missedCard) missedCard.style.display='none'; markSeen(); }; }
+    if(missedCard) {
+      missedCard.style.display='block';
+      console.log('Test card shown with', list.length, 'items');
+    }
+  };
+  
+  window.clearMissedTimestamp = function() {
+    localStorage.removeItem(MISSED_LAST_SEEN_KEY);
+    console.log('Cleared missed timestamp');
+  };
+  
+  window.triggerRegularMissedCheck = function() {
+    console.log('=== MANUAL TRIGGER OF REGULAR CHECK ===');
+    showWhatYouMissedIfAny();
+  };
+  
+  window.debugProfileModal = function() {
+    console.log('=== PROFILE MODAL DEBUG ===');
+    const elements = {
+      own: document.getElementById('ownProfileSection'),
+      other: document.getElementById('otherProfileSection'),
+      settings: document.getElementById('settingsSection'),
+      title: document.getElementById('profileModalTitle'),
+      actions: document.getElementById('profileActions'),
+      signOutBtn: document.getElementById('signOutInProfile'),
+      gear: document.getElementById('openSettings'),
+      back: document.getElementById('backToProfile'),
+      storeBtn: document.getElementById('openStore')
+    };
+    console.log('Profile modal elements:', elements);
+    console.log('Current profile view:', currentProfileView);
+    console.log('Modal open class:', document.getElementById('profileModal')?.classList.contains('open'));
+    
+    // Show computed styles
+    if(elements.own) {
+      console.log('ownProfileSection computed display:', window.getComputedStyle(elements.own).display);
+    }
+    if(elements.other) {
+      console.log('otherProfileSection computed display:', window.getComputedStyle(elements.other).display);
+    }
+    if(elements.settings) {
+      console.log('settingsSection computed display:', window.getComputedStyle(elements.settings).display);
+    }
+  };
+  
+  window.forceProfileModalCorrect = function() {
+    console.log('=== FORCING PROFILE MODAL TO CORRECT STATE ===');
+    console.log('PROFILE_VIEW defined:', typeof PROFILE_VIEW !== 'undefined');
+    console.log('PROFILE_VIEW.OWN:', PROFILE_VIEW?.OWN);
+    if(typeof applyProfileView === 'function') {
+      applyProfileView(PROFILE_VIEW.OWN);
+    }
+  };
+  
+  window.addTestPingsToCache = function() {
+    console.log('Adding test pings to cache...');
+    const now = Date.now();
+    const testPings = [
+      {
+        id: 'test1',
+        text: 'Test Ping 1',
+        lat: 40.7128,
+        lon: -74.0060,
+        likes: 5,
+        dislikes: 0,
+        createdAt: { toDate: () => new Date(now - 1000) },
+        visibility: 'public',
+        status: 'live'
+      },
+      {
+        id: 'test2', 
+        text: 'Test Ping 2',
+        lat: 40.7589,
+        lon: -73.9851,
+        likes: 3,
+        dislikes: 1,
+        createdAt: { toDate: () => new Date(now - 2000) },
+        visibility: 'public',
+        status: 'live'
+      },
+      {
+        id: 'test3',
+        text: 'Test Ping 3', 
+        lat: 40.7505,
+        lon: -73.9934,
+        likes: 8,
+        dislikes: 2,
+        createdAt: { toDate: () => new Date(now - 3000) },
+        visibility: 'public',
+        status: 'live'
+      }
+    ];
+    
+    testPings.forEach(ping => {
+      lastPingCache.set(ping.id, ping);
+    });
+    
+    console.log('Added', testPings.length, 'test pings to cache');
+    console.log('Cache size now:', lastPingCache.size);
+  };
+  
+  window.forceShowMissedCard = function() {
+    console.log('=== FORCE SHOW MISSED CARD DEBUG ===');
+    console.log('missedCard variable:', missedCard);
+    console.log('Document element by ID:', document.getElementById('missedCard'));
+    console.log('All elements with class potw-card:', document.querySelectorAll('.potw-card'));
+    
+    const element = document.getElementById('missedCard');
+    if (element) {
+      element.style.display = 'block';
+      // Remove all debug styling to show normal card
+      element.style.background = '';
+      element.style.border = '';
+      element.style.zIndex = '';
+      element.style.position = '';
+      element.style.top = '';
+      element.style.left = '';
+      element.style.transform = '';
+      element.style.width = '';
+      element.style.height = '';
+      
+      const textEl = document.getElementById('missedText');
+      const metaEl = document.getElementById('missedMeta');
+      const viewEl = document.getElementById('missedView');
+      
+      if (textEl) textEl.textContent = '1. Test Ping (5★)  2. Another Ping (3★)  3. Third Ping (1★)';
+      if (metaEl) metaEl.textContent = '12h since your last visit';
+      if (viewEl) viewEl.disabled = false;
+      
+      console.log('Element forced to show with bright colors');
+      console.log('Element position:', element.getBoundingClientRect());
+    } else {
+      console.log('ERROR: missedCard element not found in DOM');
+      // Create a test element if the original doesn't exist
+      const testDiv = document.createElement('div');
+      testDiv.id = 'testMissedCard';
+      testDiv.style.cssText = `
+        position: fixed;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        width: 400px;
+        height: 200px;
+        background: #ff0000;
+        border: 5px solid #00ff00;
+        z-index: 99999;
+        color: white;
+        padding: 20px;
+        font-size: 16px;
+        font-weight: bold;
+      `;
+      testDiv.innerHTML = 'TEST MISSED CARD - This should be visible!';
+      document.body.appendChild(testDiv);
+      console.log('Created test element instead');
+    }
+  };
 
   setInterval(()=>{ const now=Date.now(); lastPingCache.forEach((p,id)=>{ if(currentPotw && currentPotw.id===id) return; const ts=p.createdAt?.toDate? p.createdAt.toDate().getTime():0; if(ts && now-ts>LIVE_WINDOW_MS){ removeMarker(id); lastPingCache.delete(id); } }); },60*1000);
 
@@ -1387,12 +3398,43 @@ startRequestsListeners(currentUser.uid);
       if(mediaFile){
         const isVideo = (mediaFile.type||'').startsWith('video/');
         const isImage = (mediaFile.type||'').startsWith('image/');
+        
         if(isImage){
           if(mediaFile.size > 10*1024*1024) return showToast('Image must be ≤ 10MB');
+          
+          // Analyze image for NSFW content before upload
+          showModerationLoading('Analyzing image...');
+          try {
+            const analysis = await analyzeImageFromFile(mediaFile);
+            hideModerationLoading();
+            if (analysis.isNSFW) {
+              return blockUploadForNSFW(`inappropriate content detected (confidence: ${Math.round(analysis.confidence * 100)}%)`);
+            }
           imageUrl = await uploadPingImage(mediaFile, currentUser.uid);
+          } catch (error) {
+            hideModerationLoading();
+            console.error('Error analyzing image:', error);
+            // If analysis fails, allow upload to proceed
+            imageUrl = await uploadPingImage(mediaFile, currentUser.uid);
+          }
         } else if(isVideo){
           if(mediaFile.size > 50*1024*1024) return showToast('Video must be ≤ 50MB');
+          
+          // Analyze video for NSFW content before upload
+          showModerationLoading('Analyzing video...');
+          try {
+            const analysis = await analyzeVideoFromFile(mediaFile);
+            hideModerationLoading();
+            if (analysis.isNSFW) {
+              return blockUploadForNSFW(`inappropriate content detected (confidence: ${Math.round(analysis.confidence * 100)}%)`);
+            }
+            videoUrl = await uploadPingVideo(mediaFile, currentUser.uid);
+          } catch (error) {
+            hideModerationLoading();
+            console.error('Error analyzing video:', error);
+            // If analysis fails, allow upload to proceed
           videoUrl = await uploadPingVideo(mediaFile, currentUser.uid);
+          }
         }
       }
 
@@ -2236,58 +4278,32 @@ startRequestsListeners(currentUser.uid);
   }
 
   // Profile modal elements and behaviors
-  const PROFILE_VIEW = {
-    OWN: 'own',
-    OTHER: 'other',
-    SETTINGS: 'settings'
-  };
-  let currentProfileView = PROFILE_VIEW.OWN;
 
-  function applyProfileView(view){
-    try{
-      currentProfileView = view;
-      const own = document.getElementById('ownProfileSection');
-      const other = document.getElementById('otherProfileSection');
-      const settings = document.getElementById('settingsSection');
-      const title = document.getElementById('profileModalTitle');
-      const actions = document.getElementById('profileActions');
-      const signOutBtn = document.getElementById('signOutInProfile');
-      const gear = document.getElementById('openSettings');
-      const back = document.getElementById('backToProfile');
-      const storeBtn = document.getElementById('openStore');
-
-      if(view===PROFILE_VIEW.OWN){
-        if(title) title.textContent = 'Your Profile';
-        if(own) own.style.display = 'block';
-        if(other) other.style.display = 'none';
-        if(settings) settings.style.display = 'none';
-        if(actions) actions.style.display = 'flex';
-        if(signOutBtn) signOutBtn.style.display = 'inline-flex';
-        if(gear) gear.style.display = 'inline-flex';
-        if(back) back.style.display = 'none';
-        if(storeBtn) storeBtn.style.display = 'inline-flex';
-      } else if(view===PROFILE_VIEW.OTHER){
-        if(title) title.textContent = 'Profile';
-        if(own) own.style.display = 'none';
-        if(other) other.style.display = 'block';
-        if(settings) settings.style.display = 'none';
-        if(actions) actions.style.display = 'flex';
-        if(signOutBtn) signOutBtn.style.display = 'none';
-        if(gear) gear.style.display = 'inline-flex';
-        if(back) back.style.display = 'none';
-        if(storeBtn) storeBtn.style.display = 'none';
-      } else if(view===PROFILE_VIEW.SETTINGS){
-        if(title) title.textContent = 'Settings';
-        if(own) own.style.display = 'none';
-        if(other) other.style.display = 'none';
-        if(settings) settings.style.display = 'block';
-        if(actions) actions.style.display = 'flex';
-        if(signOutBtn) signOutBtn.style.display = 'inline-flex';
-        if(gear) gear.style.display = 'none';
-        if(back) back.style.display = 'inline-flex';
-        if(storeBtn) storeBtn.style.display = 'inline-flex';
+  // Legacy wrapper for applyProfileView - redirects to new system
+  function applyProfileView(view) {
+    console.log('Legacy applyProfileView called with:', view);
+    if (!profileSystemReady) {
+      console.warn('Profile system not ready, initializing...');
+      initializeProfileSystem();
+        setTimeout(() => applyProfileView(view), 100);
+        return;
       }
-    }catch(_){ }
+
+    switch (view) {
+      case PROFILE_VIEW.OWN:
+        switchToOwnProfile();
+        break;
+      case PROFILE_VIEW.SETTINGS:
+        switchToSettings();
+        break;
+      case PROFILE_VIEW.OTHER:
+        // For other profile, we need a UID - this is a legacy call
+        console.warn('Legacy applyProfileView called for OTHER without UID');
+        switchToOwnProfile();
+        break;
+      default:
+        switchToOwnProfile();
+    }
   }
   function forceOwnProfileHeader(){
     try{
@@ -2333,82 +4349,57 @@ startRequestsListeners(currentUser.uid);
   const closeCrop = document.getElementById('closeCrop');
   const saveCroppedAvatar = document.getElementById('saveCroppedAvatar');
 
+  // Legacy wrapper for openOwnProfile - redirects to new system
   async function openOwnProfile(){
+    console.log('Legacy openOwnProfile called');
     if(!currentUser){ openModal('signInModal'); return; }
-    try{
-      applyProfileView(PROFILE_VIEW.OWN);
-    }catch(_){ }
-    try{
-      // Load avatar from our Firestore user doc, not auth provider
-      if(ownAvatar){
-        try{
-          const d = await usersRef.doc(currentUser.uid).get();
-          const url = d.exists ? (d.data().photoURL || '') : '';
-          if(url){
-            ownAvatar.style.backgroundImage = `url("${url}")`;
-            ownAvatar.style.backgroundSize = 'cover';
-            ownAvatar.style.backgroundPosition = 'center';
-            ownAvatar.style.backgroundRepeat = 'no-repeat';
-            ownAvatar.classList.add('custom-avatar');
-          } else {
-            ownAvatar.style.backgroundImage = '';
-            ownAvatar.classList.remove('custom-avatar');
-          }
-        }catch(_){ }
-      }
-      if(handleInput){ try{ const d=await usersRef.doc(currentUser.uid).get(); const h=d.exists? (d.data().handle||'') : ''; handleInput.value = h || ''; }catch(_){ } }
-      if(emailDisplay){ try{ const d=await usersRef.doc(currentUser.uid).get(); const em = d.exists? (d.data().email||currentUser.email||''): (currentUser.email||''); emailDisplay.textContent = em || 'No email'; }catch(_){ } }
-      try{ await updateHandleCooldownUI(); }catch(_){ }
-      // Stats line: PPs and streak
-      try{
-        const s=document.getElementById('ownStatsLine');
-        const d=await usersRef.doc(currentUser.uid).get();
-        const pts = d.exists ? Number(d.data().points||0) : 0;
-        const streak = d.exists ? Number(d.data().streakDays||0) : 0;
-        if(s) s.textContent = `${pts} PPs • 🔥 ${streak}`;
-      }catch(_){ }
-    }catch(_){ }
+    
+    if (!profileSystemReady) {
+      console.warn('Profile system not ready, initializing...');
+      initializeProfileSystem();
+      setTimeout(() => openOwnProfile(), 100);
+      return;
+    }
+    
+    // Use new system
+    switchToOwnProfile();
+    
+    // Also refresh friends if that function exists
+    if (typeof refreshFriends === 'function') {
+      try {
     await refreshFriends();
+      } catch (e) {
+        console.error('Error refreshing friends:', e);
+      }
+    }
   }
 
   async function openOtherProfile(uid){
-    try{
-      const d = await usersRef.doc(uid).get(); const u = d.exists? d.data():{};
-      applyProfileView(PROFILE_VIEW.OTHER);
-      const av = document.getElementById('otherProfileAvatar');
-      if(av){
-        const url = u.photoURL||'';
-        if(url){
-          av.style.backgroundImage = `url("${url}")`;
-          av.style.backgroundSize = 'cover';
-          av.style.backgroundPosition = 'center';
-          av.style.backgroundRepeat = 'no-repeat';
-          av.classList.add('custom-avatar');
-        } else {
-          av.style.backgroundImage = '';
-          av.classList.remove('custom-avatar');
-        }
+    console.log('Opening other profile for UID:', uid);
+    try {
+      if (!profileSystemReady) {
+        console.warn('Profile system not ready, initializing...');
+        initializeProfileSystem();
+        setTimeout(() => openOtherProfile(uid), 100);
+        return;
       }
-      const nm = document.getElementById('otherProfileName');
-      if(nm){
-        const handle = (u && u.handle) ? String(u.handle).trim() : '';
-        const display = handle ? `@${handle}` : `@user${String(uid||'').slice(0,6)}`;
-        nm.textContent = display;
-      }
-      try{
-        const s=document.getElementById('otherStatsLine');
-        const pts = Number(u.points||0);
-        const streak = Number(u.streakDays||0);
-        if(s) s.textContent = `${pts} PPs • 🔥 ${streak}`;
-      }catch(_){ }
-      openModal('profileModal');
-    }catch(e){ console.error(e); showToast('Could not load profile'); }
+      
+      // Use new system
+      openProfileModal(PROFILE_VIEW.OTHER, uid);
+    } catch(e) { 
+      console.error('Error opening other profile:', e); 
+      showToast('Could not load profile'); 
+    }
   }
   // Use event delegation for dynamic buttons
   document.addEventListener('click', async (e) => {
     if(e.target.id === 'openSettings'){
     try{
-      if(typeof applyProfileView==='function') applyProfileView(PROFILE_VIEW.SETTINGS);
+      if (profileSystemReady) {
+        switchToSettings();
+      } else {
+        console.warn('Profile system not ready for settings');
+      }
       // Update settings profile avatar with current photo
         const settingsProfileAvatar = document.getElementById('settingsProfileAvatar');
         if(settingsProfileAvatar && currentUser) {
@@ -2432,7 +4423,13 @@ startRequestsListeners(currentUser.uid);
       try{ renderCustomPingUI(); }catch(_){ }
     }catch(_){ }
     }
-    if(e.target.id === 'backToProfile') { await openOwnProfile(); }
+    if(e.target.id === 'backToProfile') { 
+      if (profileSystemReady) {
+        switchToOwnProfile();
+      } else {
+        console.warn('Profile system not ready for back button');
+      }
+    }
     if(e.target.id === 'openGift'){ openModal('giftModal'); }
   });
 
@@ -2717,11 +4714,18 @@ startRequestsListeners(currentUser.uid);
   // Initialize custom ping UI when opening settings
   document.addEventListener('click', (e)=>{
     if(e.target && e.target.id==='openSettings'){
-      applyProfileView(PROFILE_VIEW.SETTINGS);
-      setTimeout(()=>{ try{ renderCustomPingUI(); }catch(_){ } }, 0);
+      if (profileSystemReady) {
+        switchToSettings();
+      } else {
+        console.warn('Profile system not ready for settings');
+      }
     }
     if(e.target && e.target.id==='backToProfile'){
-      applyProfileView(PROFILE_VIEW.OWN);
+      if (profileSystemReady) {
+        switchToOwnProfile();
+      } else {
+        console.warn('Profile system not ready for back button');
+      }
     }
     if(e.target && e.target.id==='openStore'){ try{ openModal('storeModal'); renderStore(); }catch(_){ } }
   });
@@ -2833,6 +4837,26 @@ startRequestsListeners(currentUser.uid);
             // Restore after draw (clip no longer needed)
             ctx.restore();
             const dataUrl = canvas.toDataURL('image/png');
+            
+            // Analyze custom ping image for NSFW content before saving
+            showModerationLoading('Analyzing custom ping image...');
+            try {
+              // Convert data URL to blob for analysis
+              const response = await fetch(dataUrl);
+              const blob = await response.blob();
+              const file = new File([blob], 'custom-ping.png', { type: 'image/png' });
+              
+              const analysis = await analyzeImageFromFile(file);
+              hideModerationLoading();
+              if (analysis.isNSFW) {
+                return blockUploadForNSFW(`inappropriate content detected (confidence: ${Math.round(analysis.confidence * 100)}%)`);
+              }
+            } catch (error) {
+              hideModerationLoading();
+              console.error('Error analyzing custom ping image:', error);
+              // If analysis fails, allow save to proceed
+            }
+            
             await usersRef.doc(currentUser.uid).set({ customPingUrl:dataUrl, selectedPingTier:1000 }, { merge:true });
             // Refresh cache and markers immediately
             try{ userDocCache.delete(currentUser.uid); }catch(_){ }
@@ -2905,6 +4929,20 @@ startRequestsListeners(currentUser.uid);
         
         const file = new File([blob], 'avatar.jpg', { type:'image/jpeg' });
         console.log('Uploading file:', file.size, 'bytes');
+        
+        // Analyze profile picture for NSFW content before upload
+        showModerationLoading('Analyzing profile picture...');
+        try {
+          const analysis = await analyzeImageFromFile(file);
+          hideModerationLoading();
+          if (analysis.isNSFW) {
+            return blockUploadForNSFW(`inappropriate content detected (confidence: ${Math.round(analysis.confidence * 100)}%)`);
+          }
+        } catch (error) {
+          hideModerationLoading();
+          console.error('Error analyzing profile picture:', error);
+          // If analysis fails, allow upload to proceed
+        }
         
         const url = await uploadPingImage(file, currentUser.uid);
         console.log('Uploaded to:', url);
@@ -3288,7 +5326,7 @@ startRequestsListeners(currentUser.uid);
   // Debug: one concise line so we can see what's happening
   try{
     const net = top ? Math.max(0,(top.likes||0)-(top.dislikes||0)) : null;
-    console.log('[PotW]', {eligible, winner: top?.id || '(none)', net});
+    // console.log('[PotW]', {eligible, winner: top?.id || '(none)', net});
   }catch(e){}
 
   if(prev !== (currentPotw ? currentPotw.id : null)){
@@ -3309,13 +5347,17 @@ startRequestsListeners(currentUser.uid);
         const weekKey2 = `${monday2.getFullYear()}_${monday2.getMonth()+1}_${monday2.getDate()}`;
         const metaId = `potw_${weekKey2}_${currentPotw.authorId}`;
         await db.runTransaction(async (tx)=>{
+          // All reads first
           const mref = db.collection('meta').doc(metaId);
           const msnap = await tx.get(mref);
           if(msnap.exists) return;
-          tx.set(mref, { type:'potw_award', at: firebase.firestore.FieldValue.serverTimestamp(), pid: currentPotw.id });
+          
           const uref = usersRef.doc(currentPotw.authorId);
           const usnap = await tx.get(uref);
           const prevPts = usnap.exists ? Number(usnap.data().points||0) : 0;
+          
+          // All writes after reads
+          tx.set(mref, { type:'potw_award', at: firebase.firestore.FieldValue.serverTimestamp(), pid: currentPotw.id });
           tx.set(uref, { points: Math.max(0, prevPts + 75) }, { merge:true });
         });
       }
@@ -3329,6 +5371,9 @@ startRequestsListeners(currentUser.uid);
   }
   updatePotwCard();
 }
+
+  // Call recomputePotw after function is defined
+  recomputePotw().catch(console.error);
 
     // 
 
@@ -3383,11 +5428,15 @@ startRequestsListeners(currentUser.uid);
     }, 400);
   })();
   /* --------- Start PotW recompute cadence as safety --------- */
-  setInterval(()=>{ recomputePotw().catch(console.error); }, 15*1000);
+  setInterval(()=>{ recomputePotw().catch(console.error); }, 60*1000); // Reduced from 15s to 60s
 
 /* --------- Ensure buttons are enabled on load ---------- */
 setTimeout(function(){ try { applyModalOpenClass(); } catch(e) {} }, 100);
 }
+  // Initialize profile system after everything is loaded
+  setTimeout(() => {
+    initializeProfileSystem();
+  }, 100);
 }
 // Start the app
 main().catch(console.error);

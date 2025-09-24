@@ -119,6 +119,9 @@ body.modal-open .bell{
 
 .toast{position:fixed;top:70px;right:16px;background:#111;color:#fff;padding:10px 12px;border-radius:12px;display:none;z-index:2100;max-width:90vw;word-break:break-word}
 .toast.show{display:block}
+.toast.error{background:#dc2626;border:1px solid #b91c1c}
+.toast.success{background:#22c55e;border:1px solid #16a34a}
+.toast.warning{background:#f59e0b;border:1px solid #d97706}
 
 /* ---------- Left Friends Sidebar + Toggle ---------- */
 .leftbar{
@@ -219,6 +222,49 @@ textarea,input[type=text],input[type=password],input[type=email],input[type=file
   background:#fff; border:1px solid #eee; border-radius:16px;
   box-shadow:0 16px 40px rgba(0,0,0,.12); z-index:2000; padding:10px 12px; max-width:min(720px,96vw);
 }
+/* Make missed card bigger */
+#missedCard {
+  max-width: min(900px, 95vw);
+  padding: 20px 24px;
+}
+#missedCard .potw-text {
+  font-size: 16px;
+  line-height: 1.6;
+  margin-bottom: 12px;
+}
+#missedCard .ping-item {
+  display: block;
+  margin-bottom: 8px;
+  padding: 8px 12px;
+  background: #f8f9fa;
+  border-radius: 8px;
+  border-left: 4px solid var(--gold);
+}
+#missedCard .ping-item:last-child {
+  margin-bottom: 0;
+}
+#missedCard .ping-author {
+  font-size: 12px;
+  color: #666;
+  margin-top: 4px;
+}
+#missedCard .ping-time {
+  font-size: 11px;
+  color: #999;
+  margin-top: 2px;
+}
+
+/* Profile modal sections */
+#ownProfileSection {
+  display: block;
+}
+#otherProfileSection {
+  display: none;
+}
+#settingsSection {
+  display: none;
+}
+/* Make missed card more visible for debugging - REMOVED */
 .potw-title{font-weight:1000; color:var(--gold); margin-bottom:6px; letter-spacing:.02em}
 .potw-row{display:flex; gap:12px; align-items:flex-start}
 .potw-row img{width:84px; height:84px; object-fit:cover; border-radius:12px; border:1px solid #eee}
