@@ -2951,11 +2951,17 @@ startRequestsListeners(currentUser.uid);
       }
     }catch(e){ console.error('What you missed error:', e); markSeen(); }
   }
-  // Run shortly after live starts
+  // Run shortly after live starts, with retry logic for cache population
   setTimeout(() => {
     console.log('=== AUTOMATIC WHAT YOU MISSED CHECK ===');
     showWhatYouMissedIfAny();
   }, 1200);
+
+  // Additional check after 5 seconds to ensure cache is populated
+  setTimeout(() => {
+    console.log('=== SECONDARY WHAT YOU MISSED CHECK (after cache population) ===');
+    showWhatYouMissedIfAny();
+  }, 5000);
   // Mark seen on first interaction
   ['click','keydown','touchstart','wheel'].forEach(evt=>{ window.addEventListener(evt, ()=>{ markSeen(); }, { once:true, passive:true }); });
   
@@ -3075,6 +3081,47 @@ startRequestsListeners(currentUser.uid);
     console.log('=== MANUAL TRIGGER OF REGULAR CHECK ===');
     showWhatYouMissedIfAny();
   };
+
+  // Force show "What You Missed" regardless of timing (for testing)
+  window.forceShowWhatYouMissed = function() {
+    console.log('=== FORCING WHAT YOU MISSED DISPLAY ===');
+    try {
+      const lastSeen = getLastSeen();
+      console.log('Current lastSeen:', lastSeen);
+      console.log('Current time:', Date.now());
+      console.log('Time difference:', Date.now() - lastSeen);
+      console.log('Cache size:', lastPingCache.size);
+      
+      // Temporarily set lastSeen to 2 hours ago to force the check
+      const twoHoursAgo = Date.now() - (2 * 3600 * 1000);
+      localStorage.setItem(MISSED_LAST_SEEN_KEY, String(twoHoursAgo));
+      console.log('Set lastSeen to 2 hours ago:', twoHoursAgo);
+      
+      // Now trigger the check
+      showWhatYouMissedIfAny();
+    } catch (error) {
+      console.error('Error forcing what you missed:', error);
+    }
+  };
+
+  // Check "What You Missed" every 30 minutes when tab is active
+  window.setInterval(() => {
+    if (document.visibilityState === 'visible') {
+      console.log('=== PERIODIC WHAT YOU MISSED CHECK ===');
+      showWhatYouMissedIfAny();
+    }
+  }, 30 * 60 * 1000); // 30 minutes
+
+  // Check "What You Missed" when tab becomes visible again (user returns)
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') {
+      console.log('=== TAB BECAME VISIBLE - CHECKING WHAT YOU MISSED ===');
+      // Add a small delay to ensure everything is loaded
+      setTimeout(() => {
+        showWhatYouMissedIfAny();
+      }, 1000);
+    }
+  });
   
   window.debugProfileModal = function() {
     console.log('=== PROFILE MODAL DEBUG ===');
