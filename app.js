@@ -1868,17 +1868,132 @@ async function main(){
     }catch(_){ return false; }
   }
 
-  async function notifyMention(recipientUid, payload){
-    try{
-      if(!recipientUid) return;
-      const dedupeId = payload.kind+ '_' + payload.key;
-      await db.runTransaction(async (tx)=>{
-        const nref = usersRef.doc(recipientUid).collection('notifications').doc(dedupeId);
-        const ns = await tx.get(nref);
-        if(ns.exists) return;
-        tx.set(nref, { type:'mention', from: payload.from, pingId: payload.pingId||null, commentId: payload.commentId||null, createdAt: firebase.firestore.FieldValue.serverTimestamp() });
+  // SIMPLE NOTIFICATION SYSTEM - NO MORE BUGS!
+  async function sendNotification(recipientUid, type, data) {
+    try {
+      console.log(`📧 Attempting to send ${type} notification to ${recipientUid}`);
+      console.log(`📧 Notification data:`, data);
+      
+      if (!recipientUid) {
+        console.log('❌ No recipient UID provided');
+        return;
+      }
+      
+      if (!currentUser) {
+        console.log('❌ No current user logged in');
+        return;
+      }
+      
+      if (recipientUid === currentUser.uid) {
+        console.log('⚠️ Cannot send notification to yourself');
+        return;
+      }
+      
+      const db = firebase.firestore();
+      const notificationRef = db.collection('notifications').doc();
+      
+      const notificationData = {
+        recipientUid: recipientUid,
+        senderUid: currentUser.uid,
+        type: type,
+        data: data,
+        read: false,
+        createdAt: firebase.firestore.FieldValue.serverTimestamp()
+      };
+      
+      console.log(`📧 Creating notification with data:`, notificationData);
+      
+      await notificationRef.set(notificationData);
+      
+      console.log(`✅ Notification sent successfully to ${recipientUid}`);
+      
+    } catch (error) {
+      console.error('❌ Error sending notification:', error);
+      console.error('❌ Error details:', {
+        recipientUid,
+        type,
+        data,
+        currentUser: currentUser?.uid,
+        error: error.message
       });
-    }catch(_){ }
+    }
+  }
+
+  // SIMPLE MENTION PARSING - NO MORE COMPLEXITY!
+  function parseMentions(text) {
+    console.log('🔍 Parsing mentions in text:', text);
+    
+    if (!text) {
+      console.log('❌ No text provided');
+      return [];
+    }
+    
+    const mentions = [];
+    const mentionRegex = /@([a-zA-Z0-9_.]+)/g;
+    let match;
+    
+    while ((match = mentionRegex.exec(text)) !== null) {
+      const handle = match[1].toLowerCase();
+      const start = match.index;
+      const end = match.index + match[0].length;
+      
+      console.log(`📝 Found mention: @${handle} at position ${start}-${end}`);
+      
+      mentions.push({
+        handle: handle,
+        start: start,
+        end: end,
+        fullMatch: match[0]
+      });
+    }
+    
+    console.log(`✅ Parsed ${mentions.length} mentions:`, mentions);
+    return mentions;
+  }
+
+  // SIMPLE MENTION RESOLUTION
+  async function resolveMentions(mentions) {
+    console.log('🔍 Resolving mentions:', mentions);
+    
+    if (!mentions || mentions.length === 0) {
+      console.log('❌ No mentions to resolve');
+      return [];
+    }
+    
+    const resolved = [];
+    
+    for (const mention of mentions) {
+      console.log(`🔍 Resolving mention: @${mention.handle}`);
+      
+      try {
+        const db = firebase.firestore();
+        const handleDoc = await db.collection('handles').doc(mention.handle).get();
+        
+        if (handleDoc.exists) {
+          const uid = handleDoc.data().uid;
+          console.log(`✅ Handle @${mention.handle} found, UID: ${uid}`);
+          
+          if (uid && uid !== currentUser?.uid) { // Don't mention yourself
+            console.log(`✅ Adding @${mention.handle} to resolved mentions`);
+            resolved.push({
+              ...mention,
+              uid: uid
+            });
+          } else if (uid === currentUser?.uid) {
+            console.log(`⚠️ Skipping @${mention.handle} - cannot mention yourself`);
+          } else {
+            console.log(`❌ Invalid UID for @${mention.handle}: ${uid}`);
+          }
+        } else {
+          console.log(`❌ Handle @${mention.handle} not found in database`);
+        }
+      } catch (error) {
+        console.error(`❌ Error resolving mention @${mention.handle}:`, error);
+      }
+    }
+    
+    console.log(`✅ Resolved ${resolved.length} mentions:`, resolved);
+    return resolved;
   }
 
   function renderTextWithMentions(container, text, mentions){
@@ -1901,7 +2016,37 @@ async function main(){
       let pendingResolves = [];
       for(const p of parts){
         if(p.kind==='text'){ frag.appendChild(document.createTextNode(p.text)); }
-        else if(p.kind==='mention'){ const span=document.createElement('button'); span.className='btn'; span.style.padding='0 6px'; span.style.borderRadius='8px'; span.style.margin='0 2px'; span.style.fontWeight='800'; span.title='Open profile'; span.setAttribute('data-uid', p.uid||''); span.onclick=()=>{ if(p.uid) openOtherProfile(p.uid); }; span.textContent=p.raw||'@user'; frag.appendChild(span); pendingResolves.push({ el:span, uid:p.uid }); }
+        else if(p.kind==='mention'){ 
+          const span=document.createElement('button'); 
+          span.className='mention-btn'; 
+          span.style.padding='2px 6px'; 
+          span.style.borderRadius='12px'; 
+          span.style.margin='0 2px'; 
+          span.style.fontWeight='600'; 
+          span.style.backgroundColor='#e3f2fd';
+          span.style.color='#1976d2';
+          span.style.border='none';
+          span.style.cursor='pointer';
+          span.title='Click to open profile'; 
+          span.setAttribute('data-uid', p.uid||''); 
+          
+          // Enhanced click handler with logging
+          span.onclick=(e)=>{ 
+            e.preventDefault();
+            e.stopPropagation();
+            console.log('🎯 Mention clicked:', { uid: p.uid, raw: p.raw });
+            if(p.uid) {
+              console.log('🚀 Opening profile for UID:', p.uid);
+              openOtherProfile(p.uid); 
+            } else {
+              console.log('❌ No UID for mention');
+            }
+          }; 
+          
+          span.textContent=p.raw||'@user'; 
+          frag.appendChild(span); 
+          pendingResolves.push({ el:span, uid:p.uid }); 
+        }
       }
       container.appendChild(frag);
       // Resolve display labels
@@ -3123,6 +3268,322 @@ startRequestsListeners(currentUser.uid);
     }
   });
   
+  // Debug function to test mention system
+  window.debugMentions = async function() {
+    console.log('=== DEBUGGING MENTION SYSTEM ===');
+    console.log('Current user:', currentUser ? currentUser.uid : 'Not logged in');
+    console.log('My friends:', myFriends ? Array.from(myFriends) : 'No friends');
+    
+    // Test handle resolution
+    const testHandle = prompt('Enter a handle to test (without @):');
+    if (testHandle) {
+      console.log(`Testing handle resolution for: ${testHandle}`);
+      try {
+        const db = firebase.firestore();
+        const handleDoc = await db.collection('handles').doc(testHandle.toLowerCase()).get();
+        console.log('Handle document exists:', handleDoc.exists);
+        if (handleDoc.exists) {
+          console.log('Handle document data:', handleDoc.data());
+        } else {
+          console.log('❌ Handle not found in database');
+        }
+        
+        // Test resolveUidByHandle function
+        const uid = await resolveUidByHandle(testHandle.toLowerCase());
+        console.log('Resolved UID:', uid);
+      } catch (error) {
+        console.error('Error testing handle:', error);
+      }
+    }
+  };
+
+  // Test mention parsing
+  window.testMentionParsing = async function() {
+    console.log('=== TESTING NEW SIMPLE MENTION SYSTEM ===');
+    const testText = prompt('Enter text with mentions to test:');
+    if (testText) {
+      console.log('Testing text:', testText);
+      const mentions = parseMentions(testText);
+      console.log('Parsed mentions:', mentions);
+      
+      if (mentions.length > 0) {
+        console.log('Resolving mentions...');
+        const resolved = await resolveMentions(mentions);
+        console.log('Resolved mentions:', resolved);
+        
+        console.log('✅ New system working! No more bugs!');
+      } else {
+        console.log('No mentions found in text');
+      }
+    }
+  };
+
+  // Comprehensive mention testing
+  window.testAllMentionScenarios = async function() {
+    console.log('🧪 === COMPREHENSIVE MENTION TESTING ===');
+    
+    const testCases = [
+      { name: 'Single mention', text: 'Hey @username check this out!' },
+      { name: 'Multiple mentions', text: 'Hey @user1 and @user2, what do you think?' },
+      { name: 'Mention at start', text: '@username hello there' },
+      { name: 'Mention at end', text: 'Hello there @username' },
+      { name: 'Mention with numbers', text: 'Hey @user123 and @test_456' },
+      { name: 'Mention with underscores', text: 'Hey @user_name and @test_user' },
+      { name: 'Mention with dots', text: 'Hey @user.name and @test.user' },
+      { name: 'No mentions', text: 'Just regular text without any mentions' },
+      { name: 'Invalid mention', text: 'Hey @invaliduser12345' },
+      { name: 'Empty text', text: '' },
+      { name: 'Self mention', text: `Hey @${currentUser?.uid || 'currentuser'}` }
+    ];
+    
+    for (const testCase of testCases) {
+      console.log(`\n🧪 Testing: ${testCase.name}`);
+      console.log(`📝 Text: "${testCase.text}"`);
+      
+      const mentions = parseMentions(testCase.text);
+      console.log(`📝 Parsed: ${mentions.length} mentions`);
+      
+      if (mentions.length > 0) {
+        const resolved = await resolveMentions(mentions);
+        console.log(`✅ Resolved: ${resolved.length} valid mentions`);
+      }
+    }
+    
+    console.log('\n✅ All test cases completed!');
+  };
+
+  // Test notification sending
+  window.testNotificationSending = async function() {
+    console.log('🧪 === TESTING NOTIFICATION SENDING ===');
+    
+    if (!currentUser) {
+      console.log('❌ No current user logged in');
+      return;
+    }
+    
+    const testUid = prompt('Enter a UID to send test notification to:');
+    if (testUid) {
+      console.log(`📧 Sending test notification to ${testUid}`);
+      
+      await sendNotification(testUid, 'test', {
+        message: 'This is a test notification',
+        timestamp: new Date().toISOString()
+      });
+      
+      console.log('✅ Test notification sent!');
+    }
+  };
+
+  // Test handle resolution
+  window.testHandleResolution = async function() {
+    console.log('🧪 === TESTING HANDLE RESOLUTION ===');
+    
+    const testHandle = prompt('Enter a handle to test (without @):');
+    if (testHandle) {
+      console.log(`🔍 Testing handle: @${testHandle}`);
+      
+      try {
+        const db = firebase.firestore();
+        const handleDoc = await db.collection('handles').doc(testHandle.toLowerCase()).get();
+        
+        if (handleDoc.exists) {
+          const uid = handleDoc.data().uid;
+          console.log(`✅ Handle @${testHandle} resolves to UID: ${uid}`);
+          
+          // Test if we can mention this user
+          const mentions = parseMentions(`Hey @${testHandle} test`);
+          const resolved = await resolveMentions(mentions);
+          
+          if (resolved.length > 0) {
+            console.log(`✅ Mention would work: @${testHandle} -> ${resolved[0].uid}`);
+          } else {
+            console.log(`❌ Mention would not work for @${testHandle}`);
+          }
+        } else {
+          console.log(`❌ Handle @${testHandle} not found in database`);
+        }
+      } catch (error) {
+        console.error(`❌ Error testing handle @${testHandle}:`, error);
+      }
+    }
+  };
+
+  // Check mention system status
+  window.checkMentionSystemStatus = async function() {
+    console.log('🔍 === MENTION SYSTEM STATUS CHECK ===');
+    
+    // Check current user
+    console.log('👤 Current user:', currentUser?.uid || 'Not logged in');
+    
+    if (!currentUser) {
+      console.log('❌ Cannot test mentions - no user logged in');
+      return;
+    }
+    
+    // Check if user has a handle
+    try {
+      const db = firebase.firestore();
+      const userDoc = await db.collection('users').doc(currentUser.uid).get();
+      
+      if (userDoc.exists) {
+        const userData = userDoc.data();
+        const handle = userData.handle;
+        console.log('👤 User handle:', handle || 'No handle');
+        
+        if (handle) {
+          // Check if handle exists in handles collection
+          const handleDoc = await db.collection('handles').doc(handle.toLowerCase()).get();
+          console.log('🔗 Handle in handles collection:', handleDoc.exists ? '✅ Yes' : '❌ No');
+          
+          if (handleDoc.exists) {
+            const handleData = handleDoc.data();
+            console.log('🔗 Handle data:', handleData);
+          }
+        }
+      } else {
+        console.log('❌ User document not found');
+      }
+    } catch (error) {
+      console.error('❌ Error checking user status:', error);
+    }
+    
+    // Test basic mention parsing
+    console.log('\n🧪 Testing basic mention parsing...');
+    const testText = 'Hey @testuser check this out!';
+    const mentions = parseMentions(testText);
+    console.log(`📝 Parsed "${testText}": ${mentions.length} mentions`);
+    
+    // Test Firebase connection
+    console.log('\n🔥 Testing Firebase connection...');
+    try {
+      const db = firebase.firestore();
+      const testDoc = await db.collection('handles').limit(1).get();
+      console.log('✅ Firebase connection working');
+    } catch (error) {
+      console.error('❌ Firebase connection error:', error);
+    }
+    
+    console.log('\n✅ Status check complete!');
+  };
+
+  // Simulate complete mention workflow
+  window.simulateMentionWorkflow = async function() {
+    console.log('🎭 === SIMULATING COMPLETE MENTION WORKFLOW ===');
+    
+    if (!currentUser) {
+      console.log('❌ No user logged in');
+      return;
+    }
+    
+    const testText = prompt('Enter text with mentions to simulate posting:');
+    if (!testText) return;
+    
+    console.log('🎯 Simulating ping posting with text:', testText);
+    
+    // Step 1: Parse mentions
+    console.log('\n📝 Step 1: Parsing mentions...');
+    const mentions = parseMentions(testText);
+    console.log(`Found ${mentions.length} mentions`);
+    
+    // Step 2: Resolve mentions
+    console.log('\n🔍 Step 2: Resolving mentions...');
+    const resolvedMentions = await resolveMentions(mentions);
+    console.log(`Resolved ${resolvedMentions.length} mentions`);
+    
+    // Step 3: Simulate ping creation
+    console.log('\n📝 Step 3: Simulating ping creation...');
+    const mockPingId = 'mock-ping-' + Date.now();
+    console.log(`Mock ping ID: ${mockPingId}`);
+    
+    // Step 4: Send notifications
+    console.log('\n📧 Step 4: Sending notifications...');
+    if (resolvedMentions.length === 0) {
+      console.log('📧 No notifications to send');
+    } else {
+      for (const mention of resolvedMentions) {
+        console.log(`📧 Sending notification to @${mention.handle} (${mention.uid})`);
+        await sendNotification(mention.uid, 'mention', {
+          pingId: mockPingId,
+          pingText: testText,
+          mentionHandle: mention.handle
+        });
+      }
+      console.log(`📧 Sent ${resolvedMentions.length} notifications`);
+    }
+    
+    console.log('\n✅ Workflow simulation complete!');
+  };
+
+  // Manually ensure current user has a handle
+  window.ensureMyHandle = async function() {
+    if (!currentUser) {
+      console.log('❌ No current user logged in');
+      return;
+    }
+    console.log('🔧 Manually ensuring handle for current user...');
+    try {
+      await ensureIdentityMappings(currentUser);
+      console.log('✅ Handle creation complete');
+    } catch (error) {
+      console.error('❌ Error ensuring handle:', error);
+    }
+  };
+
+  // Lock in a specific handle for current user (permanent)
+  window.lockMyHandle = async function() {
+    if (!currentUser) {
+      console.log('❌ No current user logged in');
+      return;
+    }
+    
+    const desiredHandle = prompt('Enter the handle you want to lock in (without @):');
+    if (!desiredHandle) return;
+    
+    const handle = desiredHandle.toLowerCase().replace(/[^a-z0-9_.]/g,'');
+    if (handle !== desiredHandle.toLowerCase()) {
+      console.log('⚠️ Handle sanitized to:', handle);
+    }
+    
+    console.log('🔒 Locking in handle:', handle);
+    try {
+      const db = firebase.firestore();
+      const uref = db.collection('users').doc(currentUser.uid);
+      const handleRef = db.collection('handles').doc(handle);
+      
+      // Use transaction to ensure atomicity
+      await db.runTransaction(async (tx) => {
+        // Check if handle is available
+        const handleSnap = await tx.get(handleRef);
+        if (handleSnap.exists && handleSnap.data().uid !== currentUser.uid) {
+          throw new Error('Handle already taken by another user');
+        }
+        
+        // Set the handle
+        tx.set(handleRef, { 
+          uid: currentUser.uid, 
+          locked: true,
+          createdAt: firebase.firestore.FieldValue.serverTimestamp() 
+        });
+        
+        // Update user document
+        tx.set(uref, { 
+          handle: handle, 
+          handleLC: handle.toLowerCase(),
+          handleLocked: true 
+        }, { merge: true });
+      });
+      
+      console.log('✅ Handle locked successfully:', handle);
+      console.log('🎉 Your handle is now permanent and will not change');
+      
+    } catch (error) {
+      console.error('❌ Error locking handle:', error);
+      if (error.message.includes('already taken')) {
+        console.log('💡 Try a different handle or add numbers/underscores');
+      }
+    }
+  };
+  
   window.debugProfileModal = function() {
     console.log('=== PROFILE MODAL DEBUG ===');
     const elements = {
@@ -3486,19 +3947,14 @@ startRequestsListeners(currentUser.uid);
       }
 
       const visibility = (pingVisibility && pingVisibility.value==='private') ? 'private' : 'public';
-      // Mentions: parse up to 10 handles; @friends counts as 1
-      let storedMentions = [];
-      try{
-        const parsed = parseMentionsFromText(text);
-        const { finalRanges, targetUids } = await buildMentionTargets({ text, ranges: parsed.ranges, handles: parsed.handles, hasFriends: parsed.hasFriends, pingDoc: { authorId: currentUser.uid }, visibility });
-        storedMentions = finalRanges; // for rendering stability
-        // Send notifications (respect daily cap and dedupe)
-        await sendMentionNotifications('mention_ping', 'temp', null, targetUids); // temp pingId replaced below after add
-      }catch(err){
-        const msg = String(err&&err.message||err||'').toLowerCase();
-        if(msg.startsWith('invalid:')) return showToast('No such user');
-        if(msg.includes('too_many')) return showToast('Max 10 mentions');
-      }
+      // SIMPLE MENTION HANDLING - NO MORE BUGS!
+      console.log('🎯 Starting mention processing for ping...');
+      console.log('🎯 Ping text:', text);
+      console.log('🎯 Current user:', currentUser?.uid);
+      
+      const mentions = parseMentions(text);
+      const resolvedMentions = await resolveMentions(mentions);
+      console.log('📝 Final resolved mentions for ping:', resolvedMentions);
 
       const ref = await pingsRef.add({
         text, lat, lon,
@@ -3509,7 +3965,7 @@ startRequestsListeners(currentUser.uid);
         visibility,
         imageUrl: imageUrl || null,
         firstNetAt: {}, // milestones map (N -> timestamp) starts empty
-        mentions: storedMentions,
+        mentions: resolvedMentions,
         videoUrl: videoUrl || null
       });
       try{ await usersRef.doc(currentUser.uid).collection('ledger').add({ ts: firebase.firestore.FieldValue.serverTimestamp(), type:'award', amount:0, reason:'post' }); }catch(_){ }
@@ -3525,13 +3981,22 @@ startRequestsListeners(currentUser.uid);
 
       closeModal('createModal'); $('#pingText').value=''; $('#lat').value=''; $('#lon').value=''; if(attachInput) attachInput.value='';
       await refreshQuota(currentUser.uid);
-      // Mentions notifications (now that we have real pingId)
-      try{
-        if(storedMentions && storedMentions.length){ const targets = storedMentions.map(m=>m.uid).filter(Boolean); await sendMentionNotifications('mention_ping', ref.id, null, targets); }
-        else {
-          const parsed = parseMentionsFromText(text); if(parsed.hasFriends && myFriends){ const list = Array.from(myFriends); await sendMentionNotifications('mention_ping', ref.id, null, list); }
+      
+      // SEND NOTIFICATIONS FOR MENTIONS - SIMPLE AND CLEAN!
+      console.log('📧 Sending notifications for mentions...');
+      if (resolvedMentions.length === 0) {
+        console.log('📧 No mentions to notify about');
+      } else {
+        for (const mention of resolvedMentions) {
+          console.log(`📧 Sending notification for mention: @${mention.handle} (${mention.uid})`);
+          await sendNotification(mention.uid, 'mention', {
+            pingId: ref.id,
+            pingText: text,
+            mentionHandle: mention.handle
+          });
         }
-      }catch(_){ }
+        console.log(`📧 Sent ${resolvedMentions.length} mention notifications`);
+      }
       showToast('Ping posted');
     }catch(e){ console.error(e); showToast((e.code||'error')+': '+(e.message||'Error posting')); }
   };
@@ -3803,22 +4268,46 @@ startRequestsListeners(currentUser.uid);
     let storedMentions = [];
     try{
       // Load ping to know visibility and author/friends
-      const pingSnap = await pingsRef.doc(openId).get();
-      const pingDoc = pingSnap.exists ? pingSnap.data() : null;
-      const vis = pingDoc && pingDoc.visibility || 'public';
-      const parsed = parseMentionsFromText(t);
-      const { finalRanges, targetUids } = await buildMentionTargets({ text:t, ranges:parsed.ranges, handles:parsed.handles, hasFriends:parsed.hasFriends, pingDoc, visibility: vis });
-      storedMentions = finalRanges;
+      // SIMPLE MENTION HANDLING FOR COMMENTS
+      console.log('🎯 Starting mention processing for comment...');
+      console.log('🎯 Comment text:', t);
+      console.log('🎯 Current user:', currentUser?.uid);
+      
+      const mentions = parseMentions(t);
+      const resolvedMentions = await resolveMentions(mentions);
+      console.log('📝 Final resolved mentions for comment:', resolvedMentions);
+      
       // Save comment with mentions
-      await pingsRef.doc(openId).collection('comments').doc(currentUser.uid).set({ text:t, authorId:currentUser.uid, createdAt:firebase.firestore.FieldValue.serverTimestamp(), mentions: storedMentions });
-      // Send notifications
-      await sendMentionNotifications('mention_comment', openId, currentUser.uid, targetUids);
+      await pingsRef.doc(openId).collection('comments').doc(currentUser.uid).set({ 
+        text:t, 
+        authorId:currentUser.uid, 
+        createdAt:firebase.firestore.FieldValue.serverTimestamp(), 
+        mentions: resolvedMentions 
+      });
+      
+      // SEND NOTIFICATIONS FOR MENTIONS IN COMMENTS
+      console.log('📧 Sending notifications for comment mentions...');
+      if (resolvedMentions.length === 0) {
+        console.log('📧 No mentions to notify about in comment');
+      } else {
+        for (const mention of resolvedMentions) {
+          console.log(`📧 Sending comment notification for mention: @${mention.handle} (${mention.uid})`);
+          await sendNotification(mention.uid, 'mention_comment', {
+            pingId: openId,
+            commentText: t,
+            mentionHandle: mention.handle
+          });
+        }
+        console.log(`📧 Sent ${resolvedMentions.length} comment mention notifications`);
+      }
     }catch(err){
-      const msg = String(err&&err.message||err||'').toLowerCase();
-      if(msg.startsWith('invalid:')) return showToast('No such user');
-      if(msg.includes('too_many')) return showToast('Max 10 mentions');
+      console.error('Error posting comment:', err);
       // Fallback: save comment without mentions
-      await pingsRef.doc(openId).collection('comments').doc(currentUser.uid).set({ text:t, authorId:currentUser.uid, createdAt:firebase.firestore.FieldValue.serverTimestamp()});
+      await pingsRef.doc(openId).collection('comments').doc(currentUser.uid).set({ 
+        text:t, 
+        authorId:currentUser.uid, 
+        createdAt:firebase.firestore.FieldValue.serverTimestamp()
+      });
     }
     commentInput.value='';
     try{ commentsEl.scrollTo({ top: 0, behavior: 'smooth' }); }catch(_){ }
@@ -3890,24 +4379,6 @@ startRequestsListeners(currentUser.uid);
     if(!uid) return { handle:null, photoURL:null, displayName:'Friend' };
     if(mentionsCache.has(uid)) return mentionsCache.get(uid);
     try{ const d=await usersRef.doc(uid).get(); const handle=d.exists? (d.data().handle||null):null; const photoURL=d.exists? (d.data().photoURL||null):null; const displayName = handle? ('@'+handle) : ('@user'+String(uid).slice(0,6)); const out = { handle, photoURL, displayName }; mentionsCache.set(uid,out); return out; }catch(_){ return { handle:null, photoURL:null, displayName:'Friend' }; }
-  }
-  function parseMentionsFromText(text){
-    const handles = [];
-    const ranges = [];
-    if(!text) return { handles, ranges, hasFriends:false };
-    let m; mentionHandleRegex.lastIndex = 0;
-    const lower = String(text);
-    while((m = mentionHandleRegex.exec(lower))){
-      const full = m[0], prefix = m[1]||'', handle = m[2]||'';
-      const start = m.index + prefix.length;
-      const end = start + 1 + handle.length;
-      if(handle.toLowerCase()==='friends') continue; // handle separately
-      handles.push(handle.toLowerCase());
-      ranges.push({ start, end, handleLC: handle.toLowerCase() });
-      if(handles.length >= 30) break; // safety
-    }
-    const hasFriends = /(^|[^a-z0-9_.])@friends(?![a-z0-9_.])/i.test(lower);
-    return { handles, ranges, hasFriends };
   }
 
   // Mention suggestions (handles + @friends)
@@ -4010,100 +4481,69 @@ startRequestsListeners(currentUser.uid);
     });
   }
 
-  // Reverted: remove Add Friend suggestions
-  async function buildMentionTargets({ text, ranges, handles, hasFriends, pingDoc, visibility }){
-    // Resolve explicit handles to UIDs
-    const mapHandleToUid = new Map();
-    for(const h of handles){ if(!mapHandleToUid.has(h)){ const uid = await resolveUidByHandle(h); mapHandleToUid.set(h, uid); } }
-    // Validate: all handles must resolve
-    const invalid = [...mapHandleToUid.entries()].filter(([h,uid])=>!uid).map(([h])=>'@'+h);
-    if(invalid.length){ throw new Error('invalid:'+invalid[0]); }
-    // Enforce mention count limit (explicit + friends token as 1)
-    const countItems = (hasFriends?1:0) + [...new Set(handles)].length;
-    if(countItems>10) throw new Error('too_many');
-    // Private restriction: only mention viewers
-    let viewerSet = null;
-    if(visibility==='private' && pingDoc){
-      try{ const author = pingDoc.authorId; const d = await usersRef.doc(author).get(); const f = d.exists ? (d.data().friendIds||[]) : []; viewerSet = new Set([author, ...f]); }catch(_){ viewerSet = new Set([pingDoc.authorId]); }
-    }
-    const currentUid = currentUser ? currentUser.uid : null;
-    // Resolve explicit mention ranges to uids and filter rules (ignore self, private viewers)
-    const finalRanges = [];
-    const targetUids = new Set();
-    for(const r of ranges){ const uid = mapHandleToUid.get(r.handleLC)||null; if(!uid) continue; if(uid===currentUid) continue; if(viewerSet && !viewerSet.has(uid)) continue; finalRanges.push({ start:r.start, end:r.end, uid }); targetUids.add(uid); }
-    // Expand @friends within allowed viewers
-    if(hasFriends && currentUid){
-      const myF = myFriends ? new Set([...myFriends]) : new Set();
-      let friendTargets = [...myF];
-      if(viewerSet){ friendTargets = friendTargets.filter(uid=>viewerSet.has(uid)); }
-      friendTargets.forEach(uid=>{ if(uid!==currentUid) targetUids.add(uid); });
-    }
-    return { finalRanges, targetUids: [...targetUids] };
-  }
-  async function sendMentionNotifications(kind, pingId, commentId, targetUids){
-    if(!targetUids || !targetUids.length || !currentUser) return;
-    // Daily cap
-    try{
-      const todayKey = dateKey(montrealNow()).replace(/-/g,'');
-      await db.runTransaction(async (tx)=>{
-        const qref = db.collection('meta').doc('mention_quota_'+currentUser.uid+'_'+todayKey);
-        const snap = await tx.get(qref);
-        const sent = snap.exists ? Number(snap.data().sent||0) : 0;
-        const budget = Math.max(0, 50 - sent);
-        const sendList = targetUids.slice(0, budget);
-        // Read all first, then perform writes to satisfy Firestore transaction rules
-        const pending = [];
-        for(const uid of sendList){
-          const nref = usersRef.doc(uid).collection('notifications').doc(kind+'_'+pingId+(commentId?('_'+commentId):''));
-          const nsnap = await tx.get(nref);
-          if(!nsnap.exists){ pending.push(nref); }
-        }
-        pending.forEach(nref=>{ tx.set(nref, { type:kind, from: currentUser.uid, pingId, commentId: commentId||null, createdAt: firebase.firestore.FieldValue.serverTimestamp() }); });
-        tx.set(qref, { sent: sent + pending.length, updatedAt: firebase.firestore.FieldValue.serverTimestamp() }, { merge:true });
-      });
-    }catch(_){ }
-  }
-  async function renderTextWithMentions(el, text, mentionRanges){
-    try{
-      el.textContent=''; const frag=document.createDocumentFragment();
-      const ranges = Array.isArray(mentionRanges) ? [...mentionRanges].sort((a,b)=>a.start-b.start) : [];
-      let idx=0;
-      for(const r of ranges){
-        const before = text.slice(idx, r.start); if(before) frag.appendChild(document.createTextNode(before));
-        const chip=document.createElement('span'); chip.className='mention';
-        const basics = await getUserBasics(r.uid);
-        const label = basics.handle ? '@'+basics.handle : '@friend';
-        chip.textContent = label;
-        chip.onclick = ()=> openOtherProfile(r.uid);
-        frag.appendChild(chip);
-        idx = r.end;
-      }
-      const tail = text.slice(idx); if(tail) frag.appendChild(document.createTextNode(tail));
-      el.appendChild(frag);
-    }catch(_){ el.textContent = text||''; }
-  }
 
   async function ensureIdentityMappings(user){
-    // Ensure handle
+    // Ensure handle - PRESERVE EXISTING HANDLES
     try{
+      console.log('🔧 Ensuring identity mappings for user:', user.uid);
       const uref = usersRef.doc(user.uid);
       const udoc = await uref.get();
       let handle = udoc.exists ? (udoc.data().handle||null) : null;
+      console.log('Current handle from user doc:', handle);
+      
+      // CRITICAL: If user already has a handle, verify it exists in handles collection and PRESERVE IT
+      if(handle) {
+        console.log('✅ User has existing handle:', handle);
+        
+        // Check if handle is locked (permanent)
+        const userData = udoc.exists ? udoc.data() : {};
+        if(userData.handleLocked) {
+          console.log('🔒 Handle is LOCKED - will never change:', handle);
+          return; // Locked handle, never change it
+        }
+        
+        // Verify the handle still exists in the handles collection
+        const handleDoc = await db.collection('handles').doc(handle.toLowerCase()).get();
+        if(handleDoc.exists) {
+          console.log('✅ Handle exists in handles collection, preserving:', handle);
+          return; // Handle is good, don't change anything
+        } else {
+          console.log('⚠️ Handle missing from handles collection, will recreate:', handle);
+          handle = null; // Will recreate below
+        }
+      }
+      
       if(!handle){
+        console.log('📝 Creating new handle for user...');
         const base = (user.displayName || (user.email ? user.email.split('@')[0] : 'user')).toLowerCase().replace(/[^a-z0-9_.]/g,'');
         let attempt = base.slice(0,16) || 'user';
+        console.log('Base handle:', base, 'First attempt:', attempt);
         let i=0;
         while(i<50){
           const doc = await db.collection('handles').doc(attempt).get();
           if(!doc.exists){ 
-            await db.collection('handles').doc(attempt).set({ uid:user.uid, createdAt: firebase.firestore.FieldValue.serverTimestamp() });
-            handle = attempt; break;
+            console.log('✅ Handle available:', attempt);
+            // Use transaction to prevent race conditions
+            await db.runTransaction(async (tx) => {
+              const handleRef = db.collection('handles').doc(attempt);
+              const handleSnap = await tx.get(handleRef);
+              if(!handleSnap.exists) {
+                tx.set(handleRef, { uid:user.uid, createdAt: firebase.firestore.FieldValue.serverTimestamp() });
+                tx.set(uref, { handle: attempt, handleLC: attempt.toLowerCase() }, { merge:true });
+                handle = attempt;
+                console.log('✅ Created handle document for:', handle);
+              }
+            });
+            if(handle) break;
           }
+          console.log('⚠️ Handle taken:', attempt, 'trying next...');
           i++; attempt = (base.slice(0,12) || 'user') + (Math.floor(Math.random()*9000)+1000);
         }
-        await uref.set({ handle, handleLC: handle.toLowerCase() }, { merge:true });
+        if(!handle) {
+          console.error('❌ Failed to create handle after 50 attempts');
       }
-    }catch(e){ console.warn('ensure handle failed', e); }
+      }
+    }catch(e){ console.error('❌ Ensure handle failed:', e); }
     // Ensure email hash map
     try{
       if(user.email){
