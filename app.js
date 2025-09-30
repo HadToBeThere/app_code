@@ -1922,31 +1922,33 @@ async function main(){
   // SIMPLE MENTION PARSING - NO MORE COMPLEXITY!
   function parseMentions(text) {
     console.log('🔍 Parsing mentions in text:', text);
-    
+
     if (!text) {
       console.log('❌ No text provided');
       return [];
     }
-    
+
     const mentions = [];
     const mentionRegex = /@([a-zA-Z0-9_.]+)/g;
     let match;
-    
+
     while ((match = mentionRegex.exec(text)) !== null) {
       const handle = match[1].toLowerCase();
       const start = match.index;
       const end = match.index + match[0].length;
-      
+      const kind = handle === 'friends' ? 'friends' : 'user';
+
       console.log(`📝 Found mention: @${handle} at position ${start}-${end}`);
-      
+
       mentions.push({
-        handle: handle,
-        start: start,
-        end: end,
-        fullMatch: match[0]
+        handle,
+        start,
+        end,
+        fullMatch: match[0],
+        kind
       });
     }
-    
+
     console.log(`✅ Parsed ${mentions.length} mentions:`, mentions);
     return mentions;
   }
@@ -1954,36 +1956,67 @@ async function main(){
   // SIMPLE MENTION RESOLUTION
   async function resolveMentions(mentions) {
     console.log('🔍 Resolving mentions:', mentions);
-    
-    if (!mentions || mentions.length === 0) {
+
+    if (!Array.isArray(mentions) || mentions.length === 0) {
       console.log('❌ No mentions to resolve');
       return [];
     }
-    
+
     const resolved = [];
-    
+    const seenUids = new Set();
+    const friendIds = myFriends ? Array.from(myFriends).filter(Boolean) : [];
+
     for (const mention of mentions) {
       console.log(`🔍 Resolving mention: @${mention.handle}`);
-      
+
+      if ((mention.kind || mention.handle) === 'friends') {
+        if (!currentUser) {
+          console.log('⚠️ Skipping @friends - no current user');
+          continue;
+        }
+        const targets = friendIds.filter(uid => uid && uid !== currentUser.uid);
+        const uniqueTargets = Array.from(new Set(targets));
+        if (!uniqueTargets.length) {
+          console.log('⚠️ Resolved @friends but no friends available');
+        } else {
+          console.log(`✅ Resolved @friends to ${uniqueTargets.length} friend(s)`);
+        }
+        resolved.push({
+          ...mention,
+          kind: 'friends',
+          uid: null,
+          targetUids: uniqueTargets
+        });
+        continue;
+      }
+
       try {
         const db = firebase.firestore();
         const handleDoc = await db.collection('handles').doc(mention.handle).get();
-        
+
         if (handleDoc.exists) {
           const uid = handleDoc.data().uid;
           console.log(`✅ Handle @${mention.handle} found, UID: ${uid}`);
-          
-          if (uid && uid !== currentUser?.uid) { // Don't mention yourself
-            console.log(`✅ Adding @${mention.handle} to resolved mentions`);
-            resolved.push({
-              ...mention,
-              uid: uid
-            });
-          } else if (uid === currentUser?.uid) {
-            console.log(`⚠️ Skipping @${mention.handle} - cannot mention yourself`);
-          } else {
+
+          if (!uid) {
             console.log(`❌ Invalid UID for @${mention.handle}: ${uid}`);
+            continue;
           }
+          if (uid === currentUser?.uid) {
+            console.log(`⚠️ Skipping @${mention.handle} - cannot mention yourself`);
+            continue;
+          }
+          if (seenUids.has(uid)) {
+            console.log(`⚠️ Skipping duplicate mention for UID ${uid}`);
+            continue;
+          }
+          console.log(`✅ Adding @${mention.handle} to resolved mentions`);
+          resolved.push({
+            ...mention,
+            kind: 'user',
+            uid
+          });
+          seenUids.add(uid);
         } else {
           console.log(`❌ Handle @${mention.handle} not found in database`);
         }
@@ -1991,9 +2024,35 @@ async function main(){
         console.error(`❌ Error resolving mention @${mention.handle}:`, error);
       }
     }
-    
+
     console.log(`✅ Resolved ${resolved.length} mentions:`, resolved);
     return resolved;
+  }
+
+  async function notifyMentionTargets(resolvedMentions, type, buildData){
+    if(!Array.isArray(resolvedMentions) || resolvedMentions.length===0) return 0;
+    const notified = new Set();
+    let count = 0;
+    for(const mention of resolvedMentions){
+      const targets = [];
+      if(mention.kind==='friends' && Array.isArray(mention.targetUids)){
+        targets.push(...mention.targetUids);
+      } else if(mention.uid){
+        targets.push(mention.uid);
+      }
+      for(const uid of targets){
+        if(!uid || notified.has(uid) || uid===currentUser?.uid) continue;
+        try{
+          const data = typeof buildData === 'function' ? buildData(mention, uid) : {};
+          await sendNotification(uid, type, data);
+          notified.add(uid);
+          count++;
+        }catch(err){
+          console.error('❌ Failed to send mention notification', { uid, type, err });
+        }
+      }
+    }
+    return count;
   }
 
   function renderTextWithMentions(container, text, mentions){
@@ -2008,7 +2067,12 @@ async function main(){
       for(const m of sorted){
         const s = Number(m.start||0), e = Number(m.end||s);
         if(s>idx){ parts.push({ kind:'text', text: text.slice(idx,s) }); }
-        parts.push({ kind:'mention', uid: m.uid, raw: text.slice(s,e) });
+        parts.push({
+          kind:'mention',
+          uid: m.uid,
+          mentionKind: m.kind || (m.uid ? 'user' : 'friends'),
+          raw: text.slice(s,e)
+        });
         idx = e;
       }
       if(idx < text.length){ parts.push({ kind:'text', text: text.slice(idx) }); }
@@ -2016,36 +2080,43 @@ async function main(){
       let pendingResolves = [];
       for(const p of parts){
         if(p.kind==='text'){ frag.appendChild(document.createTextNode(p.text)); }
-        else if(p.kind==='mention'){ 
-          const span=document.createElement('button'); 
-          span.className='mention-btn'; 
-          span.style.padding='2px 6px'; 
-          span.style.borderRadius='12px'; 
-          span.style.margin='0 2px'; 
-          span.style.fontWeight='600'; 
+        else if(p.kind==='mention'){
+          const isFriendsMention = p.mentionKind === 'friends';
+          const span=document.createElement(isFriendsMention ? 'span' : 'button');
+          span.className='mention-btn';
+          span.style.padding='2px 6px';
+          span.style.borderRadius='12px';
+          span.style.margin='0 2px';
+          span.style.fontWeight='600';
           span.style.backgroundColor='#e3f2fd';
           span.style.color='#1976d2';
           span.style.border='none';
-          span.style.cursor='pointer';
-          span.title='Click to open profile'; 
-          span.setAttribute('data-uid', p.uid||''); 
-          
-          // Enhanced click handler with logging
-          span.onclick=(e)=>{ 
-            e.preventDefault();
-            e.stopPropagation();
-            console.log('🎯 Mention clicked:', { uid: p.uid, raw: p.raw });
-            if(p.uid) {
-              console.log('🚀 Opening profile for UID:', p.uid);
-              openOtherProfile(p.uid); 
-            } else {
-              console.log('❌ No UID for mention');
-            }
-          }; 
-          
-          span.textContent=p.raw||'@user'; 
-          frag.appendChild(span); 
-          pendingResolves.push({ el:span, uid:p.uid }); 
+          span.textContent=p.raw||'@user';
+
+          if(isFriendsMention){
+            span.style.cursor='default';
+            span.setAttribute('aria-label','@friends mention');
+          } else {
+            span.style.cursor='pointer';
+            span.title='Click to open profile';
+            span.setAttribute('data-uid', p.uid||'');
+
+            // Enhanced click handler with logging
+            span.onclick=(e)=>{
+              e.preventDefault();
+              e.stopPropagation();
+              console.log('🎯 Mention clicked:', { uid: p.uid, raw: p.raw });
+              if(p.uid) {
+                console.log('🚀 Opening profile for UID:', p.uid);
+                openOtherProfile(p.uid);
+              } else {
+                console.log('❌ No UID for mention');
+              }
+            };
+            pendingResolves.push({ el:span, uid:p.uid });
+          }
+
+          frag.appendChild(span);
         }
       }
       container.appendChild(frag);
@@ -3497,20 +3568,13 @@ startRequestsListeners(currentUser.uid);
     
     // Step 4: Send notifications
     console.log('\n📧 Step 4: Sending notifications...');
-    if (resolvedMentions.length === 0) {
-      console.log('📧 No notifications to send');
-    } else {
-      for (const mention of resolvedMentions) {
-        console.log(`📧 Sending notification to @${mention.handle} (${mention.uid})`);
-        await sendNotification(mention.uid, 'mention', {
-          pingId: mockPingId,
-          pingText: testText,
-          mentionHandle: mention.handle
-        });
-      }
-      console.log(`📧 Sent ${resolvedMentions.length} notifications`);
-    }
-    
+    const sent = await notifyMentionTargets(resolvedMentions, 'mention', (mention)=>({
+      pingId: mockPingId,
+      pingText: testText,
+      mentionHandle: mention.handle || (mention.kind==='friends' ? 'friends' : null)
+    }));
+    console.log(`📧 Sent ${sent} notifications`);
+
     console.log('\n✅ Workflow simulation complete!');
   };
 
@@ -3984,19 +4048,12 @@ startRequestsListeners(currentUser.uid);
       
       // SEND NOTIFICATIONS FOR MENTIONS - SIMPLE AND CLEAN!
       console.log('📧 Sending notifications for mentions...');
-      if (resolvedMentions.length === 0) {
-        console.log('📧 No mentions to notify about');
-      } else {
-        for (const mention of resolvedMentions) {
-          console.log(`📧 Sending notification for mention: @${mention.handle} (${mention.uid})`);
-          await sendNotification(mention.uid, 'mention', {
-            pingId: ref.id,
-            pingText: text,
-            mentionHandle: mention.handle
-          });
-        }
-        console.log(`📧 Sent ${resolvedMentions.length} mention notifications`);
-      }
+      const sentCount = await notifyMentionTargets(resolvedMentions, 'mention', (mention)=>({
+        pingId: ref.id,
+        pingText: text,
+        mentionHandle: mention.handle || (mention.kind==='friends' ? 'friends' : null)
+      }));
+      console.log(`📧 Sent ${sentCount} mention notification(s)`);
       showToast('Ping posted');
     }catch(e){ console.error(e); showToast((e.code||'error')+': '+(e.message||'Error posting')); }
   };
@@ -4042,7 +4099,7 @@ startRequestsListeners(currentUser.uid);
           try{
             if(authorAddFriendBtn){
               const isFriend = myFriends && myFriends.has && myFriends.has(uid);
-              if(!you && !isFriend){ authorAddFriendBtn.style.display='inline-flex'; authorAddFriendBtn.onclick = async (e)=>{ e.stopPropagation(); try{ if(!currentUser) return showToast('Sign in first'); await sendFriendRequest(currentUser.uid, uid); authorAddFriendBtn.style.display='none'; showToast('Friend request sent'); }catch(err){ console.error(err); showToast('Could not send request'); } }; }
+              if(!you && !isFriend){ authorAddFriendBtn.style.display='inline-flex'; authorAddFriendBtn.onclick = async (e)=>{ e.stopPropagation(); try{ if(!currentUser) return showToast('Sign in first'); await sendFriendRequest(currentUser.uid, uid); authorAddFriendBtn.style.display='none'; showToast('Friend request sent'); }catch(err){ console.error(err); if(err?.code==='incoming_request_pending' || err?.message==='incoming request pending'){ showToast('They already requested you — check your requests','warning'); } else if(err?.message==='already pending'){ showToast('Request already sent','warning'); } else if(err?.message==='already friends'){ showToast('Already friends','info'); } else { showToast('Could not send request','error'); } } }; }
               else { authorAddFriendBtn.style.display='none'; authorAddFriendBtn.onclick=null; }
             }
           }catch(_){ }
@@ -4287,19 +4344,12 @@ startRequestsListeners(currentUser.uid);
       
       // SEND NOTIFICATIONS FOR MENTIONS IN COMMENTS
       console.log('📧 Sending notifications for comment mentions...');
-      if (resolvedMentions.length === 0) {
-        console.log('📧 No mentions to notify about in comment');
-      } else {
-        for (const mention of resolvedMentions) {
-          console.log(`📧 Sending comment notification for mention: @${mention.handle} (${mention.uid})`);
-          await sendNotification(mention.uid, 'mention_comment', {
-            pingId: openId,
-            commentText: t,
-            mentionHandle: mention.handle
-          });
-        }
-        console.log(`📧 Sent ${resolvedMentions.length} comment mention notifications`);
-      }
+      const sentCount = await notifyMentionTargets(resolvedMentions, 'mention_comment', (mention)=>({
+        pingId: openId,
+        commentText: t,
+        mentionHandle: mention.handle || (mention.kind==='friends' ? 'friends' : null)
+      }));
+      console.log(`📧 Sent ${sentCount} comment mention notification(s)`);
     }catch(err){
       console.error('Error posting comment:', err);
       // Fallback: save comment without mentions
@@ -4576,25 +4626,15 @@ startRequestsListeners(currentUser.uid);
       }
     }
 
-    // Cross-request auto-accept
+    // Block duplicate cross-requests; user must accept instead
     const cross = await db.collection('friendRequests').doc(toUid+'_'+fromUid).get();
-    if(cross.exists && (cross.data().status||'pending')==='pending'){
-      // Accept
-      await db.runTransaction(async (tx)=>{
-        const aRef = usersRef.doc(fromUid), bRef = usersRef.doc(toUid);
-        tx.update(aRef, { friendIds: firebase.firestore.FieldValue.arrayUnion(toUid) });
-        tx.update(bRef, { friendIds: firebase.firestore.FieldValue.arrayUnion(fromUid) });
-        tx.set(db.collection('friendRequests').doc(toUid+'_'+fromUid), { status:'accepted', acceptedAt: firebase.firestore.FieldValue.serverTimestamp() }, { merge:true });
-      });
-      // Notify both (dedupe)
-      try{
-        await Promise.all([
-          db.runTransaction(async tx=>{ const nref=usersRef.doc(fromUid).collection('notifications').doc('friend_accept_'+toUid); const snap=await tx.get(nref); if(!snap.exists){ tx.set(nref,{ type:'friend_accept', partner: toUid, createdAt: firebase.firestore.FieldValue.serverTimestamp() }); } }),
-          db.runTransaction(async tx=>{ const nref=usersRef.doc(toUid).collection('notifications').doc('friend_accept_'+fromUid); const snap=await tx.get(nref); if(!snap.exists){ tx.set(nref,{ type:'friend_accept', partner: fromUid, createdAt: firebase.firestore.FieldValue.serverTimestamp() }); } })
-        ]);
-      }catch(_){ }
-      await refreshFriends();
-      return;
+    if(cross.exists){
+      const crossStatus = (cross.data().status||'pending');
+      if(crossStatus==='pending'){
+        const err = new Error('incoming request pending');
+        err.code = 'incoming_request_pending';
+        throw err;
+      }
     }
 
     // Create pending request (dedupe by id)
@@ -4733,7 +4773,20 @@ startRequestsListeners(currentUser.uid);
         if(targetUid===currentUser.uid){ showToast("That's you!"); return; }
         await sendFriendRequest(currentUser.uid, targetUid);
         if(addFriendInputProfile) addFriendInputProfile.value=''; showToast('Friend request sent'); await updateRequestsUI();
-      }catch(e){ console.error(e); showToast('Could not send request'); }
+      }catch(e){
+        console.error(e);
+        if(e?.code==='incoming_request_pending' || e?.message==='incoming request pending'){
+          showToast('They already requested you — open your requests list','warning');
+        }else if(e?.message==='already pending'){
+          showToast('Request already pending','warning');
+        }else if(e?.message==='already friends'){
+          showToast('You are already friends','info');
+        }else if(e?.message==='limit'){
+          showToast('Friend request limit reached today','warning');
+        }else{
+          showToast('Could not send request','error');
+        }
+      }
     };
   // Autosuggest for Add Friend (friends-only)
   if(addFriendInputProfile){
