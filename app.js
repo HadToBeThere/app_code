@@ -107,110 +107,40 @@ async function main(){
     const ctx = canvas.getContext('2d');
     canvas.width = 224;
     canvas.height = 224;
-    
-    // Draw image to canvas for analysis
+
     ctx.drawImage(imageElement, 0, 0, 224, 224);
-    
-    // Get image data for analysis
-    const imageData = ctx.getImageData(0, 0, 224, 224);
-    const data = imageData.data;
-    
-    let skinPixels = 0;
-    let fleshPixels = 0;
-    let pinkPixels = 0;
-    let nudePixels = 0;
-    let tanPixels = 0;
-    let peachPixels = 0;
-    let totalPixels = data.length / 4;
-    
-    for (let i = 0; i < data.length; i += 4) {
-      const r = data[i];
-      const g = data[i + 1];
-      const b = data[i + 2];
-      
-      // Enhanced skin tone detection
-      if (r > 95 && g > 40 && b > 20 && 
-          Math.max(r, g, b) - Math.min(r, g, b) > 15 &&
-          Math.abs(r - g) > 15 && r > g && r > b) {
-        skinPixels++;
+
+    try {
+      const imageData = ctx.getImageData(0, 0, 224, 224);
+      const analyzer = (typeof window !== 'undefined' && window.__HTBTModeration && typeof window.__HTBTModeration.analyzePixels === 'function')
+        ? window.__HTBTModeration
+        : null;
+
+      if (!analyzer) {
+        throw new Error('Moderation heuristics module unavailable');
       }
-      
-      // Flesh tone detection (more specific)
-      if (r > 120 && g > 80 && b > 60 && r > g && g > b) {
-        fleshPixels++;
-      }
-      
-      // Pink/flesh tone detection (for more sensitive areas)
-      if (r > 140 && g > 100 && b > 80 && r > g && g > b && (r - g) < 30) {
-        pinkPixels++;
-      }
-      
-      // Nude/beige tone detection
-      if (r > 180 && g > 150 && b > 120 && r > g && g > b && (r - g) < 40 && (g - b) < 40) {
-        nudePixels++;
-      }
-      
-      // Tan/brown skin tone detection
-      if (r > 160 && g > 120 && b > 80 && r > g && g > b && (r - g) < 50 && (g - b) < 50) {
-        tanPixels++;
-      }
-      
-      // Peach/salmon tone detection
-      if (r > 200 && g > 160 && b > 120 && r > g && g > b && (r - g) < 60 && (g - b) < 60) {
-        peachPixels++;
-      }
+
+      const result = analyzer.analyzePixels(imageData.data);
+
+      console.log('Smart image analysis results:', result.debug);
+
+      return {
+        isNSFW: result.isNSFW,
+        confidence: result.confidence,
+        predictions: [
+          { className: 'SkinTone', probability: result.debug.skinRatio },
+          { className: 'FleshTone', probability: result.debug.fleshRatio },
+          { className: 'PinkTone', probability: result.debug.pinkRatio },
+          { className: 'NudeTone', probability: result.debug.nudeRatio },
+          { className: 'TanTone', probability: result.debug.tanRatio },
+          { className: 'PeachTone', probability: result.debug.peachRatio }
+        ],
+        debug: result.debug
+      };
+    } catch (error) {
+      console.error('Heuristic moderation failed:', error);
+      return { isNSFW: false, confidence: 0, predictions: [], error: error.message };
     }
-    
-    const skinRatio = skinPixels / totalPixels;
-    const fleshRatio = fleshPixels / totalPixels;
-    const pinkRatio = pinkPixels / totalPixels;
-    const nudeRatio = nudePixels / totalPixels;
-    const tanRatio = tanPixels / totalPixels;
-    const peachRatio = peachPixels / totalPixels;
-    
-    // Enhanced weighted scoring system
-    const totalInappropriate = (skinRatio * 0.3) + (fleshRatio * 0.4) + (pinkRatio * 0.6) + 
-                              (nudeRatio * 0.5) + (tanRatio * 0.4) + (peachRatio * 0.5);
-    
-    // SMART threshold - only flag if there's a lot of skin tone (not just a face)
-    const hasLotsOfSkin = totalInappropriate > 0.45; // 45% threshold for lots of skin (higher to avoid bikinis)
-    const hasSensitiveAreas = pinkRatio > 0.15; // 15% threshold for sensitive areas (higher to avoid bikinis)
-    const hasNudeTones = nudeRatio > 0.20; // 20% threshold for nude tones (higher to avoid bikinis)
-    const hasExplicitPatterns = (pinkRatio > 0.10 && nudeRatio > 0.10); // Both pink and nude together
-    const isVeryExplicit = totalInappropriate > 0.60; // 60% threshold for very explicit content
-    
-    // Only flag if it's clearly explicit content, not swimwear or normal faces
-    const isNSFW = isVeryExplicit || hasExplicitPatterns || (hasLotsOfSkin && hasSensitiveAreas && hasNudeTones);
-    
-    console.log('Smart image analysis results:', {
-      isNSFW,
-      confidence: totalInappropriate,
-      skinRatio,
-      fleshRatio,
-      pinkRatio,
-      nudeRatio,
-      tanRatio,
-      peachRatio,
-      hasLotsOfSkin,
-      hasSensitiveAreas,
-      hasNudeTones,
-      hasExplicitPatterns,
-      isVeryExplicit,
-      method: 'smart_image_heuristic_v2'
-    });
-    
-    return {
-      isNSFW,
-      confidence: totalInappropriate,
-      predictions: [
-        { className: 'SkinTone', probability: skinRatio },
-        { className: 'FleshTone', probability: fleshRatio },
-        { className: 'PinkTone', probability: pinkRatio },
-        { className: 'NudeTone', probability: nudeRatio },
-        { className: 'TanTone', probability: tanRatio },
-        { className: 'PeachTone', probability: peachRatio }
-      ]
-    };
   }
   
   // Analyze image from file
