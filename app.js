@@ -1669,6 +1669,11 @@ async function main(){
   const TZ = 'America/Toronto'; // Montreal time IANA
   const ONE_DAY = 24*3600*1000;
 
+  // PotW thresholds and settings
+  const POTW_MIN_NET_LIKES = 10;      // Minimum net likes to qualify for PotW
+  const POTW_MIN_COMPETITORS = 5;     // OR minimum number of eligible pings
+  const POTW_REWARD_PP = 100;         // PP reward for winning PotW
+
   /* --------- Firebase --------- */
   const firebaseConfig = {
     apiKey: "AIzaSyBpxljomYywVNB_v126yM1FFzaS_n_PaDA",
@@ -2553,12 +2558,14 @@ async function refreshAuthUI(user){
       if(w) w.style.display = 'flex';
       if(signInTop) signInTop.style.display = 'none';
       enableColorZone();
+      updateAddressSearchVisibility(); // Show address search when signed in
       try{ await maybeAwardDailyLogin(currentUser.uid); }catch(_){ }
     }else{
       if(nm) nm.textContent = 'Sign in';
       if(av){ av.style.backgroundImage=''; }
       if(w) w.style.display = 'none';
       if(signInTop) signInTop.style.display = 'inline-flex';
+      updateAddressSearchVisibility(); // Hide address search when signed out
       // Close any open profile/settings modals
       try{ document.getElementById('profileModal').classList.remove('open'); }catch(_){ }
     }
@@ -2969,6 +2976,400 @@ startRequestsListeners(currentUser.uid);
     },()=>{}, {enableHighAccuracy:true, maximumAge:15000, timeout:8000});
   }
 
+  /* --------- Address Search --------- */
+  const addressSearchEl = document.getElementById('addressSearch');
+  const addressInput = document.getElementById('addressInput');
+  const addressSuggestions = document.getElementById('addressSuggestions');
+  let searchTimeout = null;
+  let currentSearchResults = [];
+  let searchLocationMarker = null; // Hologram marker for searched location
+
+  console.log('🔍 Address search elements:', {
+    searchEl: !!addressSearchEl,
+    input: !!addressInput,
+    suggestions: !!addressSuggestions
+  });
+
+  // Show/hide address search based on auth status
+  function updateAddressSearchVisibility() {
+    if(addressSearchEl) {
+      const shouldShow = currentUser && !currentUser.isAnonymous;
+      addressSearchEl.style.display = shouldShow ? 'block' : 'none';
+      console.log('🔍 Address search visibility:', shouldShow ? 'shown' : 'hidden');
+    }
+  }
+
+  // Debounced search function
+  async function searchAddress(query) {
+    console.log('🔍 Searching for:', query);
+    
+    if(!query || query.length < 2) {
+      if(addressSuggestions) addressSuggestions.style.display = 'none';
+      currentSearchResults = [];
+      return;
+    }
+
+    try {
+      console.log('🔍 Fetching results from Nominatim...');
+      
+      // Calculate bounding box around the allowed circle
+      // RADIUS_M is in meters, convert to approximate degrees
+      const latDelta = (RADIUS_M / 111000); // ~111km per degree latitude
+      const lonDelta = (RADIUS_M / (111000 * Math.cos(FENCE_CENTER.lat * Math.PI / 180)));
+      
+      const viewbox = [
+        FENCE_CENTER.lng - lonDelta, // left
+        FENCE_CENTER.lat + latDelta, // top
+        FENCE_CENTER.lng + lonDelta, // right
+        FENCE_CENTER.lat - latDelta  // bottom
+      ].join(',');
+      
+      console.log('🔍 Search viewbox:', viewbox);
+      
+      // Use Nominatim (OpenStreetMap) geocoding API with viewbox to prioritize local results
+      // Search broadly for everything: POIs, buildings, amenities, addresses
+      const response = await fetch(
+        `https://nominatim.openstreetmap.org/search?` +
+        `q=${encodeURIComponent(query)}&` +
+        `format=json&` +
+        `limit=100&` + // Get many more results for comprehensive coverage
+        `viewbox=${viewbox}&` +
+        `bounded=0&` + // Don't strictly limit to viewbox, but prioritize it
+        `addressdetails=1&` +
+        `dedupe=0&` + // Don't deduplicate to get all variations
+        `extratags=1`, // Get extra tags for better POI info
+        {
+          headers: {
+            'User-Agent': 'HadToBeThere/1.0'
+          }
+        }
+      );
+      
+      if(!response.ok) throw new Error('Search failed');
+      
+      const results = await response.json();
+      console.log('🔍 Got results:', results.length);
+      
+      // Log first few results for debugging
+      if(results.length > 0) {
+        console.log('🔍 Sample results:', results.slice(0, 3).map(r => ({
+          name: r.name || r.display_name.split(',')[0],
+          type: r.type,
+          class: r.class,
+          distance: L.latLng(parseFloat(r.lat), parseFloat(r.lon)).distanceTo(FENCE_CENTER) + 'm'
+        })));
+      }
+      
+      // Filter results to only include locations within the allowed circle
+      // Accept all results within circle - no fuzzy matching restriction
+      const filteredResults = results.filter(result => {
+        const lat = parseFloat(result.lat);
+        const lon = parseFloat(result.lon);
+        if(isNaN(lat) || isNaN(lon)) return false;
+        
+        const location = L.latLng(lat, lon);
+        const distance = location.distanceTo(FENCE_CENTER);
+        
+        // Only requirement: must be within circle
+        return distance <= RADIUS_M;
+      });
+      
+      console.log('🔍 Filtered to allowed area:', filteredResults.length, 'of', results.length);
+      if(filteredResults.length === 0 && results.length > 0) {
+        console.warn('⚠️ All results filtered out - they are outside the allowed circle');
+        console.log('📏 Circle center:', FENCE_CENTER, 'Radius:', RADIUS_M + 'm');
+      }
+      
+      // Sort by distance from center (closest first)
+      filteredResults.sort((a, b) => {
+        const distA = L.latLng(parseFloat(a.lat), parseFloat(a.lon)).distanceTo(FENCE_CENTER);
+        const distB = L.latLng(parseFloat(b.lat), parseFloat(b.lon)).distanceTo(FENCE_CENTER);
+        return distA - distB;
+      });
+      
+      // Show more results for generic queries (like "library"), fewer for specific ones
+      const isGenericQuery = query.length <= 10 || !query.includes(' ');
+      const maxResults = isGenericQuery ? 15 : 10;
+      currentSearchResults = filteredResults.slice(0, maxResults);
+      
+      // Display suggestions
+      if(filteredResults.length === 0) {
+        addressSuggestions.innerHTML = '<div class="address-suggestion"><div class="main">No results in allowed area</div><div class="sub">Try a more specific address nearby</div></div>';
+        addressSuggestions.style.display = 'block';
+      } else {
+        addressSuggestions.innerHTML = currentSearchResults.map((result, index) => {
+          const mainName = result.name || result.display_name.split(',')[0];
+          const subName = result.display_name;
+          const distance = L.latLng(parseFloat(result.lat), parseFloat(result.lon)).distanceTo(FENCE_CENTER);
+          const distanceText = distance < 1000 ? `${Math.round(distance)}m` : `${(distance/1000).toFixed(1)}km`;
+          
+          // Add type badge for POIs/buildings
+          let typeBadge = '';
+          const type = result.type || '';
+          const classType = result.class || '';
+          if(classType === 'amenity' || classType === 'building' || type === 'university' || type === 'library' || type === 'cafe' || type === 'restaurant') {
+            const typeLabel = type || classType;
+            typeBadge = `<span style="background:#e0f2fe;color:#0369a1;padding:2px 6px;border-radius:6px;font-size:10px;font-weight:900;margin-left:6px">${escapeHtml(typeLabel)}</span>`;
+          }
+          
+          return `
+            <div class="address-suggestion" data-index="${index}">
+              <div class="main">${escapeHtml(mainName)}${typeBadge} <span style="color:#999;font-weight:400;font-size:11px">${distanceText}</span></div>
+              <div class="sub">${escapeHtml(subName)}</div>
+            </div>
+          `;
+        }).join('');
+        addressSuggestions.style.display = 'block';
+        
+        // Add click handlers to suggestions
+        addressSuggestions.querySelectorAll('.address-suggestion').forEach(el => {
+          el.onclick = () => {
+            const idx = parseInt(el.dataset.index);
+            selectAddressResult(currentSearchResults[idx]);
+          };
+        });
+      }
+    } catch(err) {
+      console.error('Address search error:', err);
+      showToast('Search failed. Try again.', 'error');
+    }
+  }
+
+  // Select a search result
+  function selectAddressResult(result) {
+    if(!result) return;
+    
+    const lat = parseFloat(result.lat);
+    const lon = parseFloat(result.lon);
+    const location = L.latLng(lat, lon);
+    
+    // Remove any existing search marker
+    if(searchLocationMarker) {
+      map.removeLayer(searchLocationMarker);
+      searchLocationMarker = null;
+    }
+    
+    // Pan and zoom to the location with high precision zoom
+    map.flyTo(location, 20, {
+      duration: 1.5,
+      easeLinearity: 0.3
+    });
+    
+      // Create hologram marker with "Ping here" label after zoom animation
+      setTimeout(() => {
+        // Create custom hologram icon
+        const hologramIcon = L.divIcon({
+          className: 'search-hologram-marker',
+          html: `
+            <div class="hologram-close-btn" data-action="close">✕</div>
+            <div class="hologram-pulse"></div>
+            <div class="hologram-pin">
+              <svg viewBox="0 0 100 100" width="60" height="80">
+                <defs>
+                  <linearGradient id="hologramGrad" x1="0%" x2="0%" y1="0%" y2="100%">
+                    <stop offset="0%" stop-color="#3b82f6" stop-opacity="0.9"/>
+                    <stop offset="100%" stop-color="#1d4ed8" stop-opacity="0.95"/>
+                  </linearGradient>
+                </defs>
+                <path d="M50 10c17 0 30 13 30 30 0 22-30 50-30 50S20 62 20 40c0-17 13-30 30-30z" fill="url(#hologramGrad)" stroke="#1e40af" stroke-width="2"/>
+                <circle cx="50" cy="40" r="12" fill="#fff" opacity="0.9"/>
+              </svg>
+            </div>
+            <div class="hologram-label">Ping here</div>
+          `,
+          iconSize: [60, 100],
+          iconAnchor: [30, 80],
+          popupAnchor: [0, -80]
+        });
+      
+      searchLocationMarker = L.marker(location, { 
+        icon: hologramIcon,
+        zIndexOffset: 10000 // Show above all other markers
+      }).addTo(map);
+      
+      // Click handler to create ping at this location
+      searchLocationMarker.on('click', (e) => {
+        console.log('🎯 Hologram marker clicked!');
+        
+        // Stop event propagation to prevent map click
+        if(e.originalEvent) {
+          e.originalEvent.stopPropagation();
+          e.originalEvent.preventDefault();
+          
+          // Check if close button was clicked
+          const target = e.originalEvent.target;
+          if(target && target.dataset && target.dataset.action === 'close') {
+            console.log('❌ Close button clicked - removing hologram and zooming out');
+            
+            // Remove marker
+            if(searchLocationMarker) {
+              map.removeLayer(searchLocationMarker);
+              searchLocationMarker = null;
+            }
+            
+            // Zoom back out to show full area
+            const centerLocation = userPos && userPos.distanceTo(FENCE_CENTER) <= RADIUS_M ? userPos : FENCE_CENTER;
+            map.flyTo(centerLocation, 16, {
+              duration: 1.2,
+              easeLinearity: 0.25
+            });
+            
+            return; // Don't open modal
+          }
+        }
+        
+        if(!currentUser) return showToast('Sign in first');
+        if(currentUser.isAnonymous) return showToast("Guests can't post. Create an account to drop pings.");
+        
+        console.log('✅ User authorized, opening modal...');
+        
+        // Pre-fill the location in create modal
+        const latEl = $('#lat'), lonEl = $('#lon');
+        if(latEl && lonEl) {
+          latEl.value = lat.toFixed(6);
+          lonEl.value = lon.toFixed(6);
+          console.log('📍 Pre-filled location:', lat.toFixed(6), lon.toFixed(6));
+        }
+        
+        // Open modal first
+        try {
+          openModal('createModal');
+          console.log('✅ Modal opened');
+        } catch(err) {
+          console.error('❌ Error opening modal:', err);
+        }
+        
+        // Then remove the hologram marker after a short delay
+        setTimeout(() => {
+          if(searchLocationMarker) {
+            map.removeLayer(searchLocationMarker);
+            searchLocationMarker = null;
+            console.log('🗑️ Hologram marker removed');
+          }
+        }, 100);
+      });
+      
+      // Auto-remove after 30 seconds if not clicked
+      setTimeout(() => {
+        if(searchLocationMarker) {
+          map.removeLayer(searchLocationMarker);
+          searchLocationMarker = null;
+        }
+      }, 30000);
+      
+    }, 1500); // Wait for zoom animation to finish
+    
+    // Clear the input and hide suggestions
+    addressInput.value = '';
+    addressSuggestions.style.display = 'none';
+    currentSearchResults = [];
+    
+    showToast(`📍 ${result.display_name.split(',').slice(0, 2).join(',')}`, 'success');
+  }
+
+  // HTML escape helper
+  function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+  }
+
+  // Simple fuzzy matching - checks if query matches text with typos
+  function fuzzyMatch(query, text) {
+    if(!query || !text) return false;
+    
+    query = query.toLowerCase().trim();
+    text = text.toLowerCase();
+    
+    // Exact match or contains
+    if(text.includes(query)) return true;
+    
+    // Check each word in the text
+    const words = text.split(/[\s,\-\.]+/);
+    for(const word of words) {
+      // Allow 1 typo per 4 characters
+      const maxErrors = Math.floor(word.length / 4) + 1;
+      if(levenshteinDistance(query, word) <= maxErrors) {
+        return true;
+      }
+      // Also check if query is at start of word
+      if(word.startsWith(query.slice(0, -1))) return true;
+    }
+    
+    return false;
+  }
+
+  // Calculate Levenshtein distance (edit distance) between two strings
+  function levenshteinDistance(a, b) {
+    if(a.length === 0) return b.length;
+    if(b.length === 0) return a.length;
+    
+    const matrix = [];
+    
+    for(let i = 0; i <= b.length; i++) {
+      matrix[i] = [i];
+    }
+    
+    for(let j = 0; j <= a.length; j++) {
+      matrix[0][j] = j;
+    }
+    
+    for(let i = 1; i <= b.length; i++) {
+      for(let j = 1; j <= a.length; j++) {
+        if(b.charAt(i-1) === a.charAt(j-1)) {
+          matrix[i][j] = matrix[i-1][j-1];
+        } else {
+          matrix[i][j] = Math.min(
+            matrix[i-1][j-1] + 1, // substitution
+            matrix[i][j-1] + 1,   // insertion
+            matrix[i-1][j] + 1    // deletion
+          );
+        }
+      }
+    }
+    
+    return matrix[b.length][a.length];
+  }
+
+  // Input event handler with debouncing
+  if(addressInput) {
+    console.log('🔍 Setting up address input listeners');
+    
+    addressInput.addEventListener('input', (e) => {
+      const query = e.target.value.trim();
+      console.log('🔍 Input changed:', query);
+      
+      // Clear previous timeout
+      if(searchTimeout) clearTimeout(searchTimeout);
+      
+      // Debounce: wait 300ms after user stops typing (faster response)
+      searchTimeout = setTimeout(() => {
+        searchAddress(query);
+      }, 300);
+    });
+    
+    // Close suggestions when clicking outside
+    document.addEventListener('click', (e) => {
+      if(addressSearchEl && !addressSearchEl.contains(e.target)) {
+        if(addressSuggestions) addressSuggestions.style.display = 'none';
+      }
+    });
+    
+    // Handle Enter key
+    addressInput.addEventListener('keydown', (e) => {
+      if(e.key === 'Enter' && currentSearchResults.length > 0) {
+        e.preventDefault();
+        selectAddressResult(currentSearchResults[0]);
+      }
+      if(e.key === 'Escape') {
+        if(addressSuggestions) addressSuggestions.style.display = 'none';
+        addressInput.blur();
+      }
+    });
+  } else {
+    console.error('❌ Address input not found!');
+  }
+
   /* --------- Firestore --------- */
   const pingsRef = db.collection('pings');
   const votesRef = db.collection('votes');
@@ -3187,6 +3588,9 @@ startRequestsListeners(currentUser.uid);
   /* --------- Live markers --------- */
   // Hoist PotW state so functions below can reference it before recompute
   let currentPotw = null; // { id, text, net, likes, dislikes, imageUrl, lat, lon, authorId, authorName }
+  let lastWeekChampion = null; // Previous week's winner for display
+  let userPreviousRank = null; // Track user's rank for "passed you" notifications
+  let userNotifiedTop3 = new Set(); // Track which pings we've sent top-3 notifications for
   const markers=new Map(); const lastPingCache=new Map(); let unsubscribe=null;
   let currentUser=null, myFriends=new Set();
   // Simple user doc cache for rendering custom pings
@@ -4539,7 +4943,7 @@ startRequestsListeners(currentUser.uid);
 
       // 🚩 Toggle Report button visibility (only show for other people's content)
       try{
-        const reportBtn=document.getElementById('reportPingBtn');
+        const reportBtn=document.getElementById('reportBtn');
         if(reportBtn){
           const mine = (currentUser && p.authorId===currentUser.uid);
           const signedIn = !!currentUser;
@@ -4955,25 +5359,7 @@ startRequestsListeners(currentUser.uid);
     }
   }catch(_){ }
 
-  // Reporting: 1 per user per ping; hide at 3
-  $('#reportReason').onchange=async(e)=>{
-    const reason=e.target.value; if(!openId || !reason) return;
-    if(!currentUser || currentUser.isAnonymous) return showToast('Sign in to report');
-    try{
-      const ref=pingsRef.doc(openId);
-      await db.runTransaction(async tx=>{
-        const snap=await tx.get(ref); if(!snap.exists) return;
-        const rptRef=ref.collection('reports').doc(currentUser.uid);
-        const rptSnap=await tx.get(rptRef); if(rptSnap.exists) return;
-        const prev=snap.data().flags||0;
-        tx.set(rptRef,{ userId:currentUser.uid, reason, createdAt:firebase.firestore.FieldValue.serverTimestamp() });
-        const next=prev+1;
-        tx.update(ref,{ flags:next, status: next>=3 ? 'hidden':'live' });
-      });
-      showToast('Thanks—report submitted');
-      e.target.value='';
-    }catch(err){ console.error(err); showToast('Report failed'); }
-  };
+  // Old report dropdown removed - now using modal
 
   
   // ---- Friend identity helpers ----
@@ -5751,9 +6137,8 @@ startRequestsListeners(currentUser.uid);
       closeModal('reportModal');
       // Reset form
       try{
-        document.getElementById('reportCategory').value = '';
-        document.getElementById('reportDetails').value = '';
-        document.getElementById('reportCharCount').textContent = '0';
+        document.getElementById('reportReasonSelect').value = '';
+        document.getElementById('reportMessage').value = '';
         window.currentReportPingId = null;
       }catch(err){
         console.error('Error resetting report form:', err);
@@ -5761,15 +6146,6 @@ startRequestsListeners(currentUser.uid);
     });
   } else {
     console.error('❌ closeReport button NOT FOUND!');
-  }
-  
-  // Character counter for report details
-  const reportDetails = document.getElementById('reportDetails');
-  const reportCharCount = document.getElementById('reportCharCount');
-  if(reportDetails && reportCharCount){
-    reportDetails.oninput = ()=>{
-      reportCharCount.textContent = reportDetails.value.length;
-    };
   }
   
   const submitReport = document.getElementById('submitReport');
@@ -5785,10 +6161,10 @@ startRequestsListeners(currentUser.uid);
         const pingId = window.currentReportPingId;
         if(!pingId) return showToast('No content selected','error');
         
-        const category = document.getElementById('reportCategory').value;
+        const category = document.getElementById('reportReasonSelect').value;
         if(!category) return showToast('Please select a reason','warning');
         
-        const details = (document.getElementById('reportDetails').value || '').trim();
+        const details = (document.getElementById('reportMessage').value || '').trim();
         
         // 🔒 RATE LIMITING: Check if user has exceeded daily report limit
         const today = dateKey(montrealNow());
@@ -5828,9 +6204,8 @@ startRequestsListeners(currentUser.uid);
         closeModal('reportModal');
         
         // Reset form
-        document.getElementById('reportCategory').value = '';
-        document.getElementById('reportDetails').value = '';
-        document.getElementById('reportCharCount').textContent = '0';
+        document.getElementById('reportReasonSelect').value = '';
+        document.getElementById('reportMessage').value = '';
         window.currentReportPingId = null;
         
       }catch(err){ 
@@ -6765,7 +7140,21 @@ startRequestsListeners(currentUser.uid);
             line.textContent = 'Friend request accepted.';
           notifsContent.appendChild(line);
           } else if(n.type==='potw_awarded'){ 
-            line.textContent = 'Your ping won Ping of the Week!';
+            const bonus = n.data?.bonus || POTW_REWARD_PP;
+            line.innerHTML = `<div>👑 Your ping won Ping of the Week! <strong>+${bonus} PPs</strong></div>`;
+            line.style.cursor = 'pointer';
+            line.onclick = ()=>{
+              if(n.data?.pingId){
+                closeModal('notifsModal');
+                const ping = lastPingCache.get(n.data.pingId);
+                if(ping){
+                  map.flyTo([ping.lat, ping.lon], 17, { duration: 0.6 });
+                  setTimeout(()=> openSheet(n.data.pingId), 300);
+                } else {
+                  showToast('This ping has expired', 'warning');
+                }
+              }
+            };
           notifsContent.appendChild(line);
           } else if(n.type==='friend_ping'){
             line.textContent = 'A friend just dropped a ping.';
@@ -6903,32 +7292,101 @@ startRequestsListeners(currentUser.uid);
   const potwEmpty= $('#potwEmpty');
 
   function updatePotwCard(){
-    if(!currentPotw){
-      // No winner yet: show encouragement, hide jump & details
+    // Get all eligible pings for this week
+    const eligiblePings = [];
+    lastPingCache.forEach((p)=>{
+      if(eligibleForPotw(p)) eligiblePings.push(p);
+    });
+
+    // Sort by net likes desc, then by firstNetAt milestone
+    eligiblePings.sort((a,b)=> {
+      const aNet = Math.max(0,(a.likes||0)-(a.dislikes||0));
+      const bNet = Math.max(0,(b.likes||0)-(b.dislikes||0));
+      if(aNet !== bNet) return bNet - aNet;
+      
+      const N = aNet;
+      const aTsObj = a.firstNetAt && a.firstNetAt[String(N)];
+      const bTsObj = b.firstNetAt && b.firstNetAt[String(N)];
+      const aTs = (aTsObj && typeof aTsObj.toDate === 'function') ? aTsObj.toDate().getTime() : null;
+      const bTs = (bTsObj && typeof bTsObj.toDate === 'function') ? bTsObj.toDate().getTime() : null;
+      
+      if(aTs && !bTs) return -1;
+      if(bTs && !aTs) return 1;
+      if(aTs && bTs && aTs !== bTs) return aTs - bTs;
+      
+      const aC = a.createdAt?.toDate?.().getTime() ?? Infinity;
+      const bC = b.createdAt?.toDate?.().getTime() ?? Infinity;
+      return aC - bC;
+    });
+
+    // Check if we meet minimum threshold
+    const topPing = eligiblePings[0];
+    const topNet = topPing ? Math.max(0, (topPing.likes||0)-(topPing.dislikes||0)) : 0;
+    const meetsThreshold = (topNet >= POTW_MIN_NET_LIKES || eligiblePings.length >= POTW_MIN_COMPETITORS);
+
+    // Elements
+    const potwThreshold = document.getElementById('potwThreshold');
+    const potwEmpty = document.getElementById('potwEmpty');
+    const lastWeekChampionEl = document.getElementById('lastWeekChampion');
+    const leaderboardEl = document.getElementById('potwLeaderboard');
+
+    if(!meetsThreshold || !currentPotw){
+      // No winner yet or threshold not met
       potwText.textContent = '';
       potwMeta.textContent = '';
       potwImg.style.display = 'none';
-      potwEmpty.style.display = 'block';
       potwJump.disabled = true;
       potwJump.style.opacity = .5;
+
+      if(eligiblePings.length === 0){
+        // No pings at all
+        if(potwEmpty) potwEmpty.style.display = 'block';
+        if(potwThreshold) potwThreshold.style.display = 'none';
+        if(lastWeekChampionEl) lastWeekChampionEl.style.display = 'none';
+      } else {
+        // Have pings but don't meet threshold
+        if(potwEmpty) potwEmpty.style.display = 'none';
+        if(potwThreshold) {
+          potwThreshold.style.display = 'block';
+          potwThreshold.textContent = `Need ${POTW_MIN_NET_LIKES} net likes or ${POTW_MIN_COMPETITORS} pings to crown a winner! (Current: ${topNet} likes, ${eligiblePings.length} pings)`;
+        }
+        // Show last week's champion as reference
+        if(lastWeekChampion && lastWeekChampionEl){
+          lastWeekChampionEl.style.display = 'block';
+          const lastWeekTextEl = document.getElementById('lastWeekText');
+          const lastWeekMetaEl = document.getElementById('lastWeekMeta');
+          if(lastWeekTextEl){
+            const t = (lastWeekChampion.text || '').trim();
+            lastWeekTextEl.textContent = t.length>60 ? (t.slice(0,60)+'…') : t;
+          }
+          if(lastWeekMetaEl){
+            const who = lastWeekChampion.authorName || 'Anon';
+            const net = Math.max(0, (lastWeekChampion.likes||0)-(lastWeekChampion.dislikes||0));
+            lastWeekMetaEl.textContent = `${who} • ${net} likes`;
+          }
+        }
+      }
+      
+      if(leaderboardEl) leaderboardEl.style.display = 'none';
       return;
     }
-    potwEmpty.style.display = 'none';
+
+    // We have a winner!
+    if(potwEmpty) potwEmpty.style.display = 'none';
+    if(potwThreshold) potwThreshold.style.display = 'none';
+    if(lastWeekChampionEl) lastWeekChampionEl.style.display = 'none';
     potwJump.disabled = false;
     potwJump.style.opacity = 1;
 
-    // Truncate message (120 chars)
+    // Display current winner
     const t = (currentPotw.text || '').trim();
     potwText.textContent = t.length>120 ? (t.slice(0,120)+'…') : t;
 
-    // Truncate author (20 chars)
     const who = (currentPotw.authorName || 'Anon');
     const whoShort = who.length>20 ? (who.slice(0,20)+'…') : who;
-
     const net = Math.max(0, (currentPotw.likes||0)-(currentPotw.dislikes||0));
     potwMeta.textContent = `${whoShort} • ${net} likes`;
 
-    // Countdown to week end (Montreal time)
     try{
       const cd = document.getElementById('potwCountdown');
       if(cd){ cd.textContent = potwEndsInText(); }
@@ -6939,18 +7397,151 @@ startRequestsListeners(currentUser.uid);
 
     potwJump.onclick = ()=>{
       const ll = L.latLng(currentPotw.lat, currentPotw.lon);
-      // Always fly to and zoom, regardless of visibility
       map.flyTo(ll, 17, { duration: 0.6, easeLinearity: 0.25 });
-      // Pulse marker (if already rendered)
       const m = markers.get(currentPotw.id);
       if(m && m._icon){
         m._icon.classList.remove('potw-pulse');
-        void m._icon.offsetWidth; // restart animation
+        void m._icon.offsetWidth;
         m._icon.classList.add('potw-pulse');
       }
-      // Subtle confetti burst near the card
       try{ triggerConfettiAtCard(); }catch(_){ }
     };
+
+    // Render leaderboard (top 3 + user if in top 10)
+    if(leaderboardEl){
+      leaderboardEl.style.display = 'block';
+      const top3El = document.getElementById('leaderboardTop3');
+      const userEl = document.getElementById('leaderboardUser');
+      
+      if(top3El){
+        top3El.innerHTML = '';
+        const top3 = eligiblePings.slice(0, 3);
+        
+        top3.forEach((ping, idx)=>{
+          const item = document.createElement('div');
+          item.className = `leaderboard-item rank-${idx+1}`;
+          
+          const rankEmoji = idx === 0 ? '👑' : idx === 1 ? '🥈' : '🥉';
+          const rank = document.createElement('div');
+          rank.className = 'leaderboard-rank';
+          rank.textContent = rankEmoji;
+          
+          const info = document.createElement('div');
+          info.className = 'leaderboard-info';
+          
+          const text = document.createElement('div');
+          text.className = 'leaderboard-text';
+          const pingText = (ping.text || '').trim();
+          text.textContent = pingText.length > 40 ? (pingText.slice(0,40)+'…') : pingText;
+          
+          const meta = document.createElement('div');
+          meta.className = 'leaderboard-meta';
+          (async ()=>{
+            const handle = await getHandleForUid(ping.authorId);
+            meta.textContent = handle;
+          })();
+          
+          info.appendChild(text);
+          info.appendChild(meta);
+          
+          const score = document.createElement('div');
+          score.className = 'leaderboard-score';
+          const netLikes = Math.max(0, (ping.likes||0)-(ping.dislikes||0));
+          score.textContent = `${netLikes}★`;
+          
+          item.appendChild(rank);
+          item.appendChild(info);
+          item.appendChild(score);
+          
+          item.style.cursor = 'pointer';
+          item.onclick = ()=>{
+            map.flyTo([ping.lat, ping.lon], 17, { duration: 0.6 });
+            setTimeout(()=> openSheet(ping.id), 300);
+          };
+          
+          top3El.appendChild(item);
+        });
+      }
+      
+      // Show user's ping if in top 10 but not in top 3
+      if(userEl && currentUser && !currentUser.isAnonymous){
+        const userPings = eligiblePings.filter(p=> p.authorId === currentUser.uid);
+        if(userPings.length > 0){
+          const userPing = userPings[0];
+          const userRank = eligiblePings.findIndex(p=> p.id === userPing.id) + 1;
+          
+          if(userRank > 3 && userRank <= 10){
+            userEl.style.display = 'block';
+            userEl.innerHTML = '';
+            
+            const item = document.createElement('div');
+            item.className = 'leaderboard-item user-ping';
+            
+            const rank = document.createElement('div');
+            rank.className = 'leaderboard-rank';
+            rank.textContent = `#${userRank}`;
+            
+            const info = document.createElement('div');
+            info.className = 'leaderboard-info';
+            
+            const text = document.createElement('div');
+            text.className = 'leaderboard-text';
+            const pingText = (userPing.text || '').trim();
+            text.textContent = pingText.length > 40 ? (pingText.slice(0,40)+'…') : pingText;
+            
+            const meta = document.createElement('div');
+            meta.className = 'leaderboard-meta';
+            meta.textContent = 'Your ping';
+            
+            info.appendChild(text);
+            info.appendChild(meta);
+            
+            const score = document.createElement('div');
+            score.className = 'leaderboard-score';
+            const netLikes = Math.max(0, (userPing.likes||0)-(userPing.dislikes||0));
+            const deficit = eligiblePings[0] ? Math.max(0, (eligiblePings[0].likes||0)-(eligiblePings[0].dislikes||0)) - netLikes : 0;
+            score.textContent = `${netLikes}★`;
+            score.title = deficit > 0 ? `${deficit} more to lead` : '';
+            
+            item.appendChild(rank);
+            item.appendChild(info);
+            item.appendChild(score);
+            
+            item.style.cursor = 'pointer';
+            item.onclick = ()=>{
+              map.flyTo([userPing.lat, userPing.lon], 17, { duration: 0.6 });
+              setTimeout(()=> openSheet(userPing.id), 300);
+            };
+            
+            userEl.appendChild(item);
+          } else {
+            userEl.style.display = 'none';
+          }
+        } else {
+          userEl.style.display = 'none';
+        }
+      }
+    }
+    
+    // Position Hall of Fame button right above the PotW card
+    positionHallOfFameButton();
+  }
+
+  function positionHallOfFameButton(){
+    try{
+      const potwCard = document.getElementById('potwCard');
+      const hallOfFameBtn = document.getElementById('hallOfFameBtn');
+      if(!potwCard || !hallOfFameBtn) return;
+      
+      // Get the actual height of the PotW card
+      const cardHeight = potwCard.offsetHeight;
+      const cardBottom = parseInt(window.getComputedStyle(potwCard).bottom) || 10;
+      
+      // Position button right above the card (cardBottom + cardHeight + 2px gap)
+      hallOfFameBtn.style.bottom = `${cardBottom + cardHeight + 2}px`;
+    }catch(e){
+      console.warn('Hall of Fame button positioning failed:', e);
+    }
   }
 
   function triggerConfettiAtCard(){
@@ -7025,17 +7616,70 @@ startRequestsListeners(currentUser.uid);
 
 
   async function recomputePotw(){
-  let top = null, eligible = 0;
+  // Check if we're in a new week - if so, save last week's winner
+  try{
+    const savedWeek = localStorage.getItem('htbt_potw_week');
+    const currentWeekStart = startOfWeekMondayLocal().getTime();
+    const currentWeekKey = String(currentWeekStart);
+    
+    if(savedWeek && savedWeek !== currentWeekKey && currentPotw){
+      // New week detected - save last week's winner before reset
+      console.log('🏆 New week detected - saving last week\'s champion:', currentPotw.text);
+      lastWeekChampion = {...currentPotw};
+      
+      // Save to Hall of Fame in Firestore (only if not already saved)
+      try{
+        const hofRef = db.collection('hallOfFame').doc(savedWeek);
+        const existing = await hofRef.get();
+        
+        if(!existing.exists){
+          await hofRef.set({
+            weekStart: parseInt(savedWeek),
+            winner: {
+              id: currentPotw.id,
+              text: currentPotw.text,
+              authorId: currentPotw.authorId,
+              authorName: currentPotw.authorName,
+              likes: currentPotw.likes,
+              dislikes: currentPotw.dislikes,
+              net: Math.max(0, currentPotw.likes - currentPotw.dislikes),
+              imageUrl: currentPotw.imageUrl,
+              lat: currentPotw.lat,
+              lon: currentPotw.lon,
+              savedAt: firebase.firestore.FieldValue.serverTimestamp()
+            }
+          });
+          console.log('✅ Saved to Hall of Fame for week:', savedWeek);
+        } else {
+          console.log('ℹ️ Hall of Fame entry already exists for week:', savedWeek);
+        }
+      }catch(e){
+        console.error('Failed to save Hall of Fame:', e);
+      }
+    }
+    
+    localStorage.setItem('htbt_potw_week', currentWeekKey);
+  }catch(e){
+    console.error('Week check failed:', e);
+  }
 
+  // Get all eligible pings and sort them
+  const eligible = [];
   lastPingCache.forEach((p)=>{
     if(!eligibleForPotw(p)) return;
-    eligible++;
-    top = top ? betterPotwCandidate(top,p) : p;
+    eligible.push(p);
   });
+
+  eligible.sort((a,b)=> betterPotwCandidate(a,b) === a ? -1 : 1);
+
+  const top = eligible[0] || null;
+  const topNet = top ? Math.max(0, (top.likes||0)-(top.dislikes||0)) : 0;
+  const meetsThreshold = (topNet >= POTW_MIN_NET_LIKES || eligible.length >= POTW_MIN_COMPETITORS);
 
   const prev = currentPotw ? currentPotw.id : null;
 
-  if(top){
+  // Only set currentPotw if threshold is met
+  if(top && meetsThreshold){
     const name = await authorName(top.authorId);
     currentPotw = {
       id: top.id, text: top.text || '',
@@ -7048,31 +7692,60 @@ startRequestsListeners(currentUser.uid);
     currentPotw = null;
   }
 
-  // Debug: one concise line so we can see what's happening
-  try{
-    const net = top ? Math.max(0,(top.likes||0)-(top.dislikes||0)) : null;
-    // console.log('[PotW]', {eligible, winner: top?.id || '(none)', net});
-  }catch(e){}
+  // Send notifications for rankings
+  if(currentUser && !currentUser.isAnonymous && eligible.length > 0){
+    try{
+      const userPings = eligible.filter(p=> p.authorId === currentUser.uid);
+      if(userPings.length > 0){
+        const userPing = userPings[0];
+        const userRank = eligible.findIndex(p=> p.id === userPing.id) + 1;
+        
+        // Notification: You're in Top 3! (once per ping)
+        if(userRank <= 3 && !userNotifiedTop3.has(userPing.id)){
+          userNotifiedTop3.add(userPing.id);
+          const rankEmoji = userRank === 1 ? '👑' : userRank === 2 ? '🥈' : '🥉';
+          showToast(`${rankEmoji} You're #${userRank} for Ping of the Week!`, 'success');
+        }
+        
+        // Notification: Someone passed you!
+        if(userPreviousRank !== null && userRank > userPreviousRank && userRank <= 10){
+          showToast(`📉 You dropped to #${userRank} in PotW rankings`, 'warning');
+        }
+        
+        // Update previous rank
+        userPreviousRank = userRank;
+      }
+    }catch(e){
+      console.error('Ranking notifications failed:', e);
+    }
+  }
 
+  // Winner changed - send notification and award points
   if(prev !== (currentPotw ? currentPotw.id : null)){
-    // Notify PotW winner when a new winner is set
     try{
       if(currentPotw && currentPotw.authorId){
-        // Deduped PotW notification: write to fixed doc id per week+winner
+        // Crown animation
+        const potwTitleEl = document.querySelector('.potw-title');
+        if(potwTitleEl && prev){
+          potwTitleEl.classList.add('crown-change');
+          setTimeout(()=> potwTitleEl.classList.remove('crown-change'), 800);
+        }
+        
+        // Deduped PotW notification
         const monday1 = startOfWeekMondayLocal();
         const weekKey1 = `${monday1.getFullYear()}_${monday1.getMonth()+1}_${monday1.getDate()}`;
         const notifId = `potw_${weekKey1}_${currentPotw.id}`;
         await db.runTransaction(async (tx)=>{
           const nref = usersRef.doc(currentPotw.authorId).collection('notifications').doc(notifId);
           const ns = await tx.get(nref);
-          if(!ns.exists){ tx.set(nref, { type:'potw_awarded', pingId: currentPotw.id, net: currentPotw.net || netLikes(lastPingCache.get(currentPotw.id) || {}), bonus:75, createdAt: firebase.firestore.FieldValue.serverTimestamp() }); }
+          if(!ns.exists){ tx.set(nref, { type:'potw_awarded', pingId: currentPotw.id, net: currentPotw.net || netLikes(lastPingCache.get(currentPotw.id) || {}), bonus:POTW_REWARD_PP, createdAt: firebase.firestore.FieldValue.serverTimestamp() }); }
         });
-        // Award PotW PPs once per week per winner (client-side dedupe via meta)
+        
+        // Award PotW PPs (dedupe via meta doc)
         const monday2 = startOfWeekMondayLocal();
         const weekKey2 = `${monday2.getFullYear()}_${monday2.getMonth()+1}_${monday2.getDate()}`;
         const metaId = `potw_${weekKey2}_${currentPotw.authorId}`;
         await db.runTransaction(async (tx)=>{
-          // All reads first
           const mref = db.collection('meta').doc(metaId);
           const msnap = await tx.get(mref);
           if(msnap.exists) return;
@@ -7081,9 +7754,8 @@ startRequestsListeners(currentUser.uid);
           const usnap = await tx.get(uref);
           const prevPts = usnap.exists ? Number(usnap.data().points||0) : 0;
           
-          // All writes after reads
           tx.set(mref, { type:'potw_award', at: firebase.firestore.FieldValue.serverTimestamp(), pid: currentPotw.id });
-          tx.set(uref, { points: Math.max(0, prevPts + 75) }, { merge:true });
+          tx.set(uref, { points: Math.max(0, prevPts + POTW_REWARD_PP) }, { merge:true });
         });
       }
     }catch(e){ console.warn('potw notify failed', e); }
@@ -7119,6 +7791,125 @@ startRequestsListeners(currentUser.uid);
 
   // Update PotW countdown every 60s
   setInterval(()=>{ try{ const cd=document.getElementById('potwCountdown'); if(cd){ cd.textContent = potwEndsInText(); } }catch(_){ } }, 60*1000);
+
+  /* --------- Hall of Fame --------- */
+  const hallOfFameBtn = document.getElementById('hallOfFameBtn');
+  const hallOfFameModal = document.getElementById('hallOfFameModal');
+  const closeHallOfFame = document.getElementById('closeHallOfFame');
+  const hallOfFameContent = document.getElementById('hallOfFameContent');
+
+  if(hallOfFameBtn){
+    hallOfFameBtn.onclick = async ()=>{
+      try{
+        openModal('hallOfFameModal');
+        
+        // Load all winners from Firestore
+        if(hallOfFameContent){
+          hallOfFameContent.innerHTML = '<div class="muted" style="text-align:center; padding:20px;">Loading history...</div>';
+        }
+        
+        const hofSnapshot = await db.collection('hallOfFame').orderBy('weekStart', 'desc').get();
+        
+        if(hofSnapshot.empty){
+          if(hallOfFameContent){
+            hallOfFameContent.innerHTML = '<div class="muted" style="text-align:center; padding:40px;">No winners yet. Be the first to win Ping of the Week!</div>';
+          }
+          return;
+        }
+        
+        // Get current week start to exclude it from Hall of Fame
+        const currentWeekStart = startOfWeekMondayLocal().getTime();
+        
+        // Render all weeks (excluding current week and duplicates)
+        let html = '';
+        const seenWeeks = new Set(); // Track weeks to prevent duplicates
+        
+        hofSnapshot.forEach((doc)=>{
+          const data = doc.data();
+          const winner = data.winner || {};
+          const weekStart = data.weekStart || 0;
+          
+          // Skip current week (it's not complete yet)
+          if(weekStart >= currentWeekStart){
+            console.log('Skipping current week from Hall of Fame:', weekStart);
+            return;
+          }
+          
+          // Skip duplicates
+          if(seenWeeks.has(weekStart)){
+            console.log('Skipping duplicate week:', weekStart);
+            return;
+          }
+          seenWeeks.add(weekStart);
+          
+          const weekDate = new Date(weekStart);
+          const weekEnd = new Date(weekStart + 6 * 24 * 3600 * 1000);
+          
+          const weekTitle = `Week of ${weekDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} - ${weekEnd.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}`;
+          const pingText = (winner.text || 'Ping').trim();
+          const displayText = pingText.length > 80 ? (pingText.slice(0,80)+'…') : pingText;
+          const authorName = winner.authorName || 'Anonymous';
+          const net = winner.net || 0;
+          
+          html += `
+            <div class="hof-week" data-ping-id="${winner.id || ''}" data-lat="${winner.lat || ''}" data-lon="${winner.lon || ''}">
+              <div class="hof-week-title">${weekTitle}</div>
+              <div class="hof-ping-text">${displayText}</div>
+              <div class="hof-ping-meta">by ${authorName} • ${net} likes</div>
+            </div>
+          `;
+        });
+        
+        if(hallOfFameContent){
+          // Check if we have any past winners to display
+          if(html.trim() === ''){
+            hallOfFameContent.innerHTML = '<div class="muted" style="text-align:center; padding:40px;">No past winners yet. The current week\'s winner will appear here next Monday!</div>';
+            return;
+          }
+          
+          hallOfFameContent.innerHTML = html;
+          
+          // Add click handlers to each week entry
+          hallOfFameContent.querySelectorAll('.hof-week').forEach((el)=>{
+            el.onclick = ()=>{
+              const pingId = el.getAttribute('data-ping-id');
+              const lat = parseFloat(el.getAttribute('data-lat'));
+              const lon = parseFloat(el.getAttribute('data-lon'));
+              
+              if(pingId && !isNaN(lat) && !isNaN(lon)){
+                closeModal('hallOfFameModal');
+                map.flyTo([lat, lon], 17, { duration: 0.8 });
+                setTimeout(()=>{
+                  // Try to open the ping if it still exists
+                  if(lastPingCache.has(pingId)){
+                    openSheet(pingId);
+                  } else {
+                    showToast('This ping has expired', 'warning');
+                  }
+                }, 400);
+              }
+            };
+          });
+        }
+        
+      }catch(e){
+        console.error('Hall of Fame loading failed:', e);
+        if(hallOfFameContent){
+          hallOfFameContent.innerHTML = '<div class="muted" style="text-align:center; padding:20px; color:#ef4444;">Failed to load history. Please try again.</div>';
+        }
+      }
+    };
+  }
+
+  if(closeHallOfFame){
+    closeHallOfFame.onclick = ()=> closeModal('hallOfFameModal');
+  }
+
+  // Reposition Hall of Fame button on window resize
+  window.addEventListener('resize', positionHallOfFameButton);
+  
+  // Initial positioning after a short delay to ensure DOM is ready
+  setTimeout(positionHallOfFameButton, 100);
 
   /* --------- Auth state --------- */
   auth.onAuthStateChanged(async (u)=>{

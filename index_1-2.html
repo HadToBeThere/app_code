@@ -79,7 +79,10 @@
     </div>
 
     <!-- Right: notifications, ledger & profile -->
-    <button class="bell" id="bellBtn">🔔 <span class="badge" id="notifBadge" style="display:none">0</span></button>
+    <div class="bell-wrapper">
+      <button class="bell" id="bellBtn">🔔</button>
+      <span class="badge-under" id="notifBadge" style="display:none">0</span>
+    </div>
     <button class="bell" id="ledgerBtn" title="PP activity log">🧾</button>
 
     <!-- Top-right Sign in (visible when signed out) -->
@@ -94,44 +97,52 @@
     <!-- Add Ping FAB -->
     <button class="fab" id="addBtn">+ Ping</button>
 
+    <!-- Address Search (above legend) -->
+    <div class="address-search" id="addressSearch" style="display:none">
+      <input type="text" id="addressInput" placeholder="Search address..." autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" />
+      <div class="address-suggestions" id="addressSuggestions" style="display:none"></div>
+    </div>
+
     <!-- Legend -->
     <div class="legend">
       <strong>Had to Be There</strong><br/>
-      Drop a ping inside the circle. No names, no harassment. Posts vanish after 24h.<br/>
-      Yours = green; friends = orange; others = blue.
+      Ephemeral, hyper-local social moments. Share what's happening right now within your circle — no real names, no harassment. Every ping vanishes after 24 hours, keeping it fresh and in-the-moment.
     </div>
+
+    <!-- Hall of Fame Button -->
+    <button class="btn" id="hallOfFameBtn" title="Hall of Fame" style="position:fixed;left:50%;transform:translateX(-50%);bottom:90px;z-index:2000;background:#fff;border:1px solid var(--gold);border-radius:10px;padding:5px 10px;font-weight:900;box-shadow:0 6px 18px rgba(0,0,0,.08);display:flex;align-items:center;justify-content:center;gap:5px;color:var(--gold);width:min(420px,88vw);font-size:10px;">
+      🏆 Hall of Fame
+    </button>
 
     <!-- Ping of the Week card -->
     <div id="potwCard" class="potw-card" role="region" aria-live="polite">
       <div class="potw-title">PING OF THE WEEK</div>
       <div class="potw-row">
-        <img id="potwImg" alt="Ping of the Week image" style="display:none; width:60px; height:60px; object-fit:cover; border-radius:12px;"/>
+        <img id="potwImg" alt="Ping of the Week image" style="display:none;"/>
         <div class="potw-body">
           <div class="potw-text" id="potwText"></div>
           <div class="potw-meta muted" id="potwMeta"></div>
           <div class="potw-countdown muted" id="potwCountdown" aria-live="polite"></div>
           <div id="potwEmpty" class="muted">No ping of the week yet.</div>
+          <div id="potwThreshold" class="muted" style="display:none; margin-top:2px; font-size:8px;">Need 10 net likes or 5 pings to crown a winner!</div>
+          <div id="lastWeekChampion" style="display:none; margin-top:4px; padding:4px 7px; background:#fef3c7; border-radius:5px; border:1px solid #fbbf24;">
+            <div style="font-size:8px; font-weight:900; color:#92400e; margin-bottom:1px;">LAST WEEK'S CHAMPION</div>
+            <div id="lastWeekText" style="font-size:10px; font-weight:800; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;"></div>
+            <div id="lastWeekMeta" class="muted" style="font-size:8px; margin-top:1px;"></div>
+          </div>
         </div>
         <div class="potw-actions">
           <button class="btn" id="potwJump" disabled>View</button>
         </div>
       </div>
-    </div>
-
-    <!-- What You Missed card -->
-    <div id="missedCard" class="potw-card" role="region" aria-live="polite" style="display:none">
-      <div class="potw-title">WHAT YOU MISSED</div>
-      <div class="potw-row">
-        <div class="potw-body">
-          <div class="potw-text" id="missedText"></div>
-          <div class="potw-meta muted" id="missedMeta"></div>
-        </div>
-        <div class="potw-actions">
-          <button class="btn" id="missedView" disabled>View</button>
-          <button class="btn" id="missedClose">Dismiss</button>
-        </div>
+      <!-- Live Leaderboard -->
+      <div id="potwLeaderboard" style="display:none;">
+        <div style="font-weight:900; font-size:9px; color:var(--gold); margin-bottom:5px; text-align:center;">🏆 LEADERBOARD</div>
+        <div id="leaderboardTop3"></div>
+        <div id="leaderboardUser" style="display:none;"></div>
       </div>
     </div>
+
 
     <!-- Notifications Modal -->
     <div class="modal" id="notifsModal" aria-modal="true" role="dialog">
@@ -193,13 +204,7 @@
         <div style="font-weight:900" id="pingSheetTitle">Ping</div>
         <div style="display:flex; gap:8px">
           <button class="btn" id="openInMapsBtn" title="Open directions" style="display:none">Open in Maps</button>
-          <select id="reportReason" class="btn">
-            <option value="">Report…</option>
-            <option value="harassment">Harassment</option>
-            <option value="doxxing">Personal info</option>
-            <option value="spam">Spam</option>
-            <option value="other">Other</option>
-          </select>
+          <button class="btn report-btn" id="reportBtn">Report</button>
           <button class="btn" id="deletePingBtn" style="display:none">Delete</button>
           <button class="btn" id="closeSheet">Close</button>
         </div>
@@ -437,6 +442,50 @@
           <button class="btn" id="closeLedger">Close</button>
         </header>
         <div class="content" id="ledgerContent"><div class="muted">No activity</div></div>
+      </div>
+    </div>
+
+    <!-- Report Modal -->
+    <div class="modal" id="reportModal" aria-modal="true" role="dialog">
+      <div class="card">
+        <header>
+          <span>Report Content</span>
+          <button class="btn" id="closeReport">Close</button>
+        </header>
+        <div class="content">
+          <div class="section">
+            <div><strong>Reason</strong></div>
+            <div class="row" style="gap:.5rem; margin-top:6px; align-items:center">
+              <select id="reportReasonSelect" class="btn" style="flex:1">
+                <option value="">Select a reason…</option>
+                <option value="harassment">Harassment</option>
+                <option value="doxxing">Personal info</option>
+                <option value="spam">Spam</option>
+                <option value="other">Other</option>
+              </select>
+            </div>
+          </div>
+          <div class="section" style="margin-top:12px">
+            <div><strong>Additional details (optional)</strong></div>
+            <textarea id="reportMessage" maxlength="500" placeholder="Please describe why you're reporting this..." style="margin-top:6px; min-height:100px; resize:vertical"></textarea>
+          </div>
+        </div>
+        <div class="actions">
+          <button class="btn primary" id="submitReport">Submit Report</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Hall of Fame Modal -->
+    <div class="modal" id="hallOfFameModal" aria-modal="true" role="dialog">
+      <div class="card" style="max-width:min(720px,92vw); max-height:86vh;">
+        <header>
+          <span>🏆 Hall of Fame - Ping of the Week Winners</span>
+          <button class="btn" id="closeHallOfFame">Close</button>
+        </header>
+        <div class="content" id="hallOfFameContent">
+          <div class="muted" style="text-align:center; padding:20px;">Loading history...</div>
+        </div>
       </div>
     </div>
 
