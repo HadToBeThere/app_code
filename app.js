@@ -1278,17 +1278,22 @@ async function main(){
   setTimeout(async () => {
     await initializeModeration();
     
-    // Run retroactive scan after moderation is ready (with delay to not interfere with app startup)
+    // 🚀 PERFORMANCE OPTIMIZATION: Disabled automatic retroactive scanning
+    // Auto-scan was slowing down app startup significantly
+    // To manually scan pings, use console: scanAllPings() or scanPingsFromDate('2025-01-01')
+    console.log('💡 Moderation ready. Run scanAllPings() in console to manually scan content.');
+    
+    /* DISABLED AUTOMATIC SCAN - Run manually if needed
     setTimeout(async () => {
       console.log('🔄 Starting automatic retroactive scan of recent pings...');
       try {
-        // Scan pings from the last 7 days
         const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
         await scanPingsFromDate(sevenDaysAgo);
       } catch (error) {
         console.error('❌ Automatic retroactive scan failed:', error);
       }
-    }, 5000); // 5 second delay after moderation system is ready
+    }, 5000);
+    */
   }, 1000);
 
   /* --------- Profile System --------- */
@@ -1302,6 +1307,7 @@ async function main(){
   // Profile system state
   let profileSystemReady = false;
   let profileElements = {};
+  let currentProfileLoadId = 0; // 🏁 RACE CONDITION FIX: Track latest profile load request
   
   // Initialize profile system when DOM is ready
   function initializeProfileSystem() {
@@ -1360,6 +1366,11 @@ async function main(){
     if (profileElements.signOutBtn) {
       profileElements.signOutBtn.onclick = async () => {
         try {
+          // 🧹 MEMORY LEAK FIX: Cleanup listeners before sign-out
+          if(typeof notifUnsub !== 'undefined' && notifUnsub) {
+            notifUnsub();
+            notifUnsub = null;
+          }
           await auth.signOut();
           closeModal('profileModal');
           showToast('Signed out');
@@ -1556,16 +1567,19 @@ async function main(){
       
       // Initialize custom ping UI
       if (typeof renderCustomPingUI === 'function') {
+        console.log('🎨 Calling renderCustomPingUI from loadSettingsData');
         setTimeout(() => {
           try {
             renderCustomPingUI();
           } catch (e) {
-            console.error('Error rendering custom ping UI:', e);
+            console.error('❌ Error rendering custom ping UI:', e);
           }
-        }, 0);
+        }, 100); // Small delay to ensure DOM is ready
+      } else {
+        console.error('❌ renderCustomPingUI function NOT FOUND!');
       }
       
-      console.log('Settings data loaded successfully');
+      console.log('✅ Settings data loaded successfully');
     } catch (e) {
       console.error('Error loading settings data:', e);
     }
@@ -1573,11 +1587,21 @@ async function main(){
   
   // Load other profile data
   async function loadOtherProfileData(uid) {
+    // 🏁 RACE CONDITION FIX: Generate unique ID for this request
+    const requestId = ++currentProfileLoadId;
+    
     try {
-      console.log('Loading other profile data for:', uid);
+      console.log('Loading other profile data for:', uid, 'requestId:', requestId);
       
       // Load user data from Firestore
       const userDoc = await usersRef.doc(uid).get();
+      
+      // Check if this request is still the latest
+      if(requestId !== currentProfileLoadId) {
+        console.log('🚫 Ignoring stale profile load request', requestId, 'current:', currentProfileLoadId);
+        return; // Abandon this request, a newer one is in progress
+      }
+      
       const userData = userDoc.exists ? userDoc.data() : {};
       
       // Update other profile avatar
@@ -1772,10 +1796,26 @@ async function main(){
   // Reverse geocoding (OSM Nominatim) with simple localStorage cache
   const GEOCODE_CACHE_KEY = 'htbt_geocode_cache_v1';
   let geocodeCache = {};
+  const GEOCODE_CACHE_MAX = 1000; // 🛡️ MEMORY PROTECTION: Limit cache size
   try{ const raw=localStorage.getItem(GEOCODE_CACHE_KEY); if(raw) geocodeCache=JSON.parse(raw)||{}; }catch(_){ geocodeCache={}; }
   function saveGeocodeCache(){ try{ localStorage.setItem(GEOCODE_CACHE_KEY, JSON.stringify(geocodeCache)); }catch(_){ } }
   function geokey(lat, lon){ return `${lat.toFixed(4)},${lon.toFixed(4)}`; }
   function pickArea(addr){ return addr.neighbourhood||addr.suburb||addr.city_district||addr.borough||addr.village||addr.town||addr.city||addr.county||''; }
+  // 🧹 LRU eviction: Remove oldest entries when cache is full
+  function evictOldGeocacheEntries() {
+    const keys = Object.keys(geocodeCache);
+    if(keys.length > GEOCODE_CACHE_MAX) {
+      // Sort by timestamp (oldest first)
+      const sorted = keys.sort((a, b) => (geocodeCache[a].ts || 0) - (geocodeCache[b].ts || 0));
+      // Remove oldest 20%
+      const toRemove = Math.floor(keys.length * 0.2);
+      for(let i = 0; i < toRemove; i++) {
+        delete geocodeCache[sorted[i]];
+      }
+      console.log(`🧹 Evicted ${toRemove} old geocache entries`);
+      saveGeocodeCache();
+    }
+  }
   function formatPlace(addr){
     try{
       const road = addr.road || addr.pedestrian || addr.residential || addr.footway || addr.path || addr.cycleway || '';
@@ -1799,29 +1839,173 @@ async function main(){
       const j = await res.json();
       const addr = j && (j.address||{});
       const label = formatPlace(addr) || (j.display_name ? String(j.display_name).split(',').slice(0,3).join(', ').trim() : '');
-      if(label){ geocodeCache[key] = { label, ts: now }; saveGeocodeCache(); return label; }
+      if(label){ 
+        evictOldGeocacheEntries(); // Check and evict before adding
+        geocodeCache[key] = { label, ts: now }; 
+        saveGeocodeCache(); 
+        return label; 
+      }
     }catch(_){ }
     return '';
   }
 
   // ---------- Mentions helpers ----------
   const uidHandleCache = new Map();
-  async function getHandleForUid(uid){
+  const handleCacheTimestamps = new Map(); // Track when each handle was cached
+  const HANDLE_CACHE_TTL = 2 * 60 * 1000; // 🔒 2 minutes TTL (reduced from 5 for freshness)
+  
+  // 🔄 Invalidate cache entry for a specific user
+  function invalidateHandleCache(uid) {
+    if(uidHandleCache.has(uid)) {
+      uidHandleCache.delete(uid);
+      handleCacheTimestamps.delete(uid);
+      console.log('🧹 Invalidated handle cache for UID:', uid);
+    }
+  }
+  
+  // 🔄 Clear all handle caches (use after widespread changes)
+  function clearAllHandleCaches() {
+    uidHandleCache.clear();
+    handleCacheTimestamps.clear();
+    console.log('🧹 Cleared all handle caches');
+  }
+  
+  async function getHandleForUid(uid, forceRefresh = false){
     if(!uid) return '@user';
-    if(uidHandleCache.has(uid)) return uidHandleCache.get(uid);
+    
+    // Check if cache is stale (older than TTL)
+    const cachedTime = handleCacheTimestamps.get(uid);
+    const isCacheStale = cachedTime && (Date.now() - cachedTime > HANDLE_CACHE_TTL);
+    
+    if(!forceRefresh && !isCacheStale && uidHandleCache.has(uid)) {
+      return uidHandleCache.get(uid);
+    }
+    
+    // Cache miss or stale - fetch fresh data
     try{
       const d = await usersRef.doc(uid).get();
       const u = d.exists ? d.data() : null;
       const h = u && u.handle ? String(u.handle).trim() : '';
       const display = h ? `@${h}` : `@user${String(uid).slice(0,6)}`;
+      
+      // Cache with timestamp (only cache real handles)
+      if(h) {
       uidHandleCache.set(uid, display);
+        handleCacheTimestamps.set(uid, Date.now());
+        console.log('📦 Cached handle for', uid, ':', display);
+      }
       return display;
-    }catch(_){
+    }catch(err){
+      console.error('Error in getHandleForUid:', err);
+      // Don't cache fallback values - might get real handle next time
       const fallback = `@user${String(uid).slice(0,6)}`;
-      uidHandleCache.set(uid, fallback);
       return fallback;
     }
   }
+  
+  // 🕒 Periodic cache cleanup - remove stale entries every 2 minutes
+  setInterval(() => {
+    const now = Date.now();
+    let cleanedCount = 0;
+    
+    handleCacheTimestamps.forEach((timestamp, uid) => {
+      if(now - timestamp > HANDLE_CACHE_TTL) {
+        uidHandleCache.delete(uid);
+        handleCacheTimestamps.delete(uid);
+        cleanedCount++;
+      }
+    });
+    
+    if(cleanedCount > 0) {
+      console.log(`🧹 Cleaned ${cleanedCount} stale handle cache entries`);
+    }
+  }, 2 * 60 * 1000); // Every 2 minutes
+  
+  // 🧹 CRITICAL: Clean up ALL orphaned handles from database
+  async function cleanupOrphanedHandles() {
+    console.log('🧹 Starting comprehensive orphaned handle cleanup...');
+    const toDelete = []; // Track which handles to delete
+    
+    try {
+      const handleDocs = await db.collection('handles').get();
+      const scanned = handleDocs.size;
+      console.log(`🔍 Scanning ${scanned} handles...`);
+      
+      // First pass: identify orphaned handles
+      const validationPromises = [];
+      const handleInfo = [];
+      
+      for (const doc of handleDocs.docs) {
+        const handle = doc.id;
+        const data = doc.data();
+        const uid = data.uid;
+        
+        if (!uid) {
+          console.log(`❌ Handle "${handle}" has no UID -> marking for deletion`);
+          toDelete.push(handle);
+          continue;
+        }
+        
+        handleInfo.push({ handle, uid, ref: doc.ref });
+        validationPromises.push(usersRef.doc(uid).get());
+      }
+      
+      // Validate all handles in parallel
+      const userDocs = await Promise.all(validationPromises);
+      
+      for (let i = 0; i < handleInfo.length; i++) {
+        const { handle, uid, ref } = handleInfo[i];
+        const userDoc = userDocs[i];
+        
+        if (!userDoc.exists) {
+          console.log(`❌ Handle "${handle}" points to non-existent user ${uid} -> marking for deletion`);
+          toDelete.push(handle);
+          continue;
+        }
+        
+        const userData = userDoc.data();
+        const userHandle = userData.handle ? String(userData.handle).trim().toLowerCase() : '';
+        
+        if (userHandle !== handle.toLowerCase()) {
+          console.log(`❌ Handle "${handle}" doesn't match user's handle "${userHandle}" -> marking for deletion`);
+          toDelete.push(handle);
+          continue;
+        }
+        
+        // Valid handle
+        console.log(`✅ Handle "${handle}" is valid`);
+      }
+      
+      // Second pass: delete all orphaned handles
+      console.log(`🗑️ Deleting ${toDelete.length} orphaned handles...`);
+      const deletionPromises = toDelete.map(handle => 
+        db.collection('handles').doc(handle).delete().catch(err => {
+          console.error(`Failed to delete handle "${handle}":`, err);
+        })
+      );
+      
+      await Promise.all(deletionPromises);
+      
+      const deleted = toDelete.length;
+      console.log(`✅ Cleanup complete: ${deleted}/${scanned} orphaned handles deleted`);
+      showToast(`Cleanup: ${deleted}/${scanned} orphaned handles deleted`, 'success');
+      
+      // Clear all caches after cleanup
+      clearAllHandleCaches();
+      
+      return { scanned, deleted, orphaned: toDelete };
+    } catch (err) {
+      console.error('❌ Error during handle cleanup:', err);
+      showToast('Handle cleanup failed: ' + err.message, 'error');
+      return { error: err };
+    }
+  }
+  
+  // Expose for debugging and manual cleanup
+  window.invalidateHandleCache = invalidateHandleCache;
+  window.clearAllHandleCaches = clearAllHandleCaches;
+  window.getHandleForUid = getHandleForUid;
+  window.cleanupOrphanedHandles = cleanupOrphanedHandles; // 🧹 NEW: Manual cleanup function
 
   const HANDLE_RE = /(^|[^a-z0-9_.])@([a-z0-9_.]{2,24})\b/i;
   function extractSingleMention(text){
@@ -1889,21 +2073,48 @@ async function main(){
         return;
       }
       
-      const db = firebase.firestore();
-      const notificationRef = db.collection('notifications').doc();
+      // Use subcollection pattern to match the listener
+      // Generate deterministic ID to prevent duplicates (no timestamp for most types)
+      let notifId;
+      if(type === 'mention' || type === 'mention_comment') {
+        // For mentions, one notification per ping per sender
+        notifId = `${type}_${data.pingId}_${currentUser.uid}`;
+      } else if(type === 'like_milestone') {
+        // For milestones, one notification per ping per milestone
+        notifId = `${type}_${data.pingId}_${data.milestone}`;
+      } else if(type === 'friend_comment') {
+        // For friend comments, one notification per ping (latest comment overwrites)
+        notifId = `${type}_${data.pingId}_${currentUser.uid}`;
+      } else {
+        // For other types, include timestamp
+        notifId = `${type}_${data.pingId || 'notif'}_${currentUser.uid}_${Date.now()}`;
+      }
       
       const notificationData = {
-        recipientUid: recipientUid,
-        senderUid: currentUser.uid,
         type: type,
+        from: currentUser.uid,
         data: data,
         read: false,
         createdAt: firebase.firestore.FieldValue.serverTimestamp()
       };
       
-      console.log(`📧 Creating notification with data:`, notificationData);
+      console.log(`📧 Creating notification with ID: ${notifId}`);
       
-      await notificationRef.set(notificationData);
+      // Check if notification already exists to avoid incrementing unread count
+      const notifRef = usersRef.doc(recipientUid).collection('notifications').doc(notifId);
+      const existingNotif = await notifRef.get();
+      const isNew = !existingNotif.exists;
+      
+      // Write to user's subcollection (matches the listener)
+      // Using set() with same ID will overwrite duplicates
+      await notifRef.set(notificationData);
+      
+      // Update unread count only if notification is new
+      if(isNew) {
+        await usersRef.doc(recipientUid).set({ 
+          unreadCount: firebase.firestore.FieldValue.increment(1) 
+        }, { merge: true });
+      }
       
       console.log(`✅ Notification sent successfully to ${recipientUid}`);
       
@@ -1951,7 +2162,7 @@ async function main(){
     return mentions;
   }
 
-  // SIMPLE MENTION RESOLUTION
+  // SIMPLE MENTION RESOLUTION (resolves handles to UIDs, keeps @friends as-is)
   async function resolveMentions(mentions) {
     console.log('🔍 Resolving mentions:', mentions);
     
@@ -1965,6 +2176,28 @@ async function main(){
     for (const mention of mentions) {
       console.log(`🔍 Resolving mention: @${mention.handle}`);
       
+      // 👥 SPECIAL CASE: @friends is stored as-is (no UID, marked as special)
+      if (mention.handle.toLowerCase() === 'friends') {
+        console.log('👥 Detected @friends - storing as special mention');
+        
+        if(!currentUser || currentUser.isAnonymous) {
+          console.log('⚠️ Cannot use @friends - not signed in');
+          continue;
+        }
+        
+        // Store @friends as a special mention (no UID expansion)
+        resolved.push({
+          ...mention,
+          handle: 'friends',
+          uid: null, // No specific UID - this is a group mention
+          isFriendsGroup: true // Flag to identify this is @friends
+        });
+        
+        console.log('✅ Added @friends as special mention');
+        continue;
+      }
+      
+      // Normal handle resolution
       try {
         const db = firebase.firestore();
         const handleDoc = await db.collection('handles').doc(mention.handle).get();
@@ -1995,6 +2228,38 @@ async function main(){
     console.log(`✅ Resolved ${resolved.length} mentions:`, resolved);
     return resolved;
   }
+  
+  // 👥 EXPAND @friends for notifications (separate from storage)
+  async function expandMentionsForNotifications(mentions) {
+    console.log('📧 Expanding mentions for notifications...');
+    
+    const expanded = [];
+    
+    for(const mention of mentions) {
+      // If it's @friends, expand to all current user's friends
+      if(mention.isFriendsGroup && mention.handle === 'friends') {
+        console.log('👥 Expanding @friends for notifications...');
+        
+        const friendIds = myFriends && myFriends.size > 0 ? Array.from(myFriends) : [];
+        console.log(`👥 Notifying ${friendIds.length} friends`);
+        
+        // Add each friend as a separate notification target
+        for(const friendUid of friendIds) {
+          expanded.push({
+            ...mention,
+            uid: friendUid,
+            handle: 'friends' // Keep as "friends" for notification message
+          });
+        }
+      } else if(mention.uid) {
+        // Normal mention with UID - add as-is
+        expanded.push(mention);
+      }
+    }
+    
+    console.log(`📧 Expanded to ${expanded.length} notification targets`);
+    return expanded;
+  }
 
   function renderTextWithMentions(container, text, mentions){
     try{
@@ -2002,13 +2267,35 @@ async function main(){
       if(!text){ return; }
       const parts = [];
       if(!Array.isArray(mentions) || mentions.length===0){ container.textContent = text; return; }
+      
+      // 👥 Detect @friends in the original text to render it specially
+      const friendsMentions = mentions.filter(m => m.isFriendsGroup || m.handle === 'friends');
+      const hasFriendsMention = friendsMentions.length > 0;
+      
       // assume at most one mention; still robust for many
       let idx=0;
       const sorted = [...mentions].sort((a,b)=> (Number(a.start||0)) - (Number(b.start||0)));
-      for(const m of sorted){
+      
+      // Deduplicate mentions by position (since @friends creates multiple with same position)
+      const uniqueMentions = [];
+      const seenPositions = new Set();
+      for(const m of sorted) {
+        const posKey = `${m.start}-${m.end}`;
+        if(!seenPositions.has(posKey)) {
+          uniqueMentions.push(m);
+          seenPositions.add(posKey);
+        }
+      }
+      
+      for(const m of uniqueMentions){
         const s = Number(m.start||0), e = Number(m.end||s);
         if(s>idx){ parts.push({ kind:'text', text: text.slice(idx,s) }); }
-        parts.push({ kind:'mention', uid: m.uid, raw: text.slice(s,e) });
+        parts.push({ 
+          kind:'mention', 
+          uid: m.uid, 
+          raw: text.slice(s,e),
+          isFriendsGroup: m.isFriendsGroup || m.handle === 'friends' // Flag for @friends
+        });
         idx = e;
       }
       if(idx < text.length){ parts.push({ kind:'text', text: text.slice(idx) }); }
@@ -2026,6 +2313,19 @@ async function main(){
           span.style.backgroundColor='#e3f2fd';
           span.style.color='#1976d2';
           span.style.border='none';
+          
+          // 👥 @friends is NOT clickable
+          if(p.isFriendsGroup) {
+            span.style.cursor='default';
+            span.style.opacity='0.9';
+            span.title='Mentioned all friends';
+            span.onclick=(e)=>{ 
+              e.preventDefault();
+              e.stopPropagation();
+              // Do nothing - @friends is not clickable
+            };
+          } else {
+            // Normal mention - clickable
           span.style.cursor='pointer';
           span.title='Click to open profile'; 
           span.setAttribute('data-uid', p.uid||''); 
@@ -2037,11 +2337,20 @@ async function main(){
             console.log('🎯 Mention clicked:', { uid: p.uid, raw: p.raw });
             if(p.uid) {
               console.log('🚀 Opening profile for UID:', p.uid);
+                // Use window reference to ensure function is defined
+                if(typeof window.openOtherProfile === 'function') {
+                  window.openOtherProfile(p.uid);
+                } else if(typeof openOtherProfile === 'function') {
               openOtherProfile(p.uid); 
+                } else {
+                  console.error('❌ openOtherProfile function not found');
+                  showToast('Profile feature loading...');
+                }
             } else {
               console.log('❌ No UID for mention');
             }
           }; 
+          } 
           
           span.textContent=p.raw||'@user'; 
           frag.appendChild(span); 
@@ -2216,10 +2525,58 @@ async function refreshAuthUI(user){
     const nm = document.getElementById('profileName');
     const signInTop = document.getElementById('signInTop');
     if(currentUser){
-      // Prefer handle for display; never auto-use Google photo
+      // 🔒 CRITICAL USERNAME PERSISTENCE FIX V2
+      // ALWAYS use cached handle first, only fetch if not cached
+      // This prevents random overwrites when Firestore fetch is slow/fails
+      
       let handle = null, uploadedPhoto = null;
-      try{ const udoc = await usersRef.doc(currentUser.uid).get(); if(udoc.exists){ handle = udoc.data().handle||null; uploadedPhoto = udoc.data().photoURL || null; } }catch(_){ }
-      if(nm) nm.textContent = handle ? `@${handle}` : `@user${String(currentUser.uid||'').slice(0,6)}`;
+      
+      // 1️⃣ First try to get handle from cache (fast & reliable)
+      const cachedHandle = uidHandleCache.get(currentUser.uid);
+      if(cachedHandle) {
+        // Extract handle without @ prefix
+        handle = cachedHandle.startsWith('@') ? cachedHandle.slice(1) : cachedHandle;
+        console.log('🚀 Using CACHED handle for display:', handle);
+      }
+      
+      // 2️⃣ Only fetch from Firestore if not in cache (or to get photo)
+      try{ 
+        const udoc = await usersRef.doc(currentUser.uid).get(); 
+        if(udoc.exists){ 
+          const firestoreHandle = udoc.data().handle||null;
+          uploadedPhoto = udoc.data().photoURL || null;
+          
+          // Only use Firestore handle if we don't have a cached one
+          if(!handle && firestoreHandle) {
+            handle = firestoreHandle;
+            console.log('📥 Using Firestore handle for display:', handle);
+          } else if(handle && firestoreHandle && handle !== firestoreHandle) {
+            // Cache and Firestore don't match - prefer Firestore as source of truth
+            handle = firestoreHandle;
+            console.log('🔄 Updated handle from Firestore:', firestoreHandle);
+          }
+        } 
+      }catch(err){ 
+        console.error('⚠️ Error fetching user data in refreshAuthUI (using cached handle):', err);
+        // Keep using cached handle even if Firestore fetch fails
+      }
+      
+      // 3️⃣ Update display - ONLY if we have a valid handle
+      if(nm) {
+        if(handle) {
+          nm.textContent = `@${handle}`;
+          console.log('✅ Display updated to:', `@${handle}`);
+        } else {
+          // No handle available at all - preserve existing or show loading
+          const currentText = nm.textContent || '';
+          if(currentText === '' || currentText === 'Sign in') {
+            nm.textContent = 'Loading...';
+            console.log('⏳ No handle available - showing loading state');
+          } else {
+            console.log('🔒 No handle found - preserving display:', currentText);
+          }
+        }
+      }
       if(av){ 
         if(uploadedPhoto){ 
           av.style.backgroundImage = `url("${uploadedPhoto}")`; 
@@ -2287,6 +2644,7 @@ async function refreshAuthUI(user){
         }, { merge:true });
         await refreshQuota(currentUser.uid);
         await refreshFriends();
+        startFriendsListener(currentUser.uid); // 🔥 Start real-time friend list updates
         startNotifListener(currentUser.uid);
         await ensureIdentityMappings(currentUser);
 startRequestsListeners(currentUser.uid);
@@ -2303,6 +2661,7 @@ startRequestsListeners(currentUser.uid);
     // Signed out
     myFriends = new Set();
     if(typeof notifUnsub === 'function') notifUnsub();
+    if(typeof unreadCountUnsub === 'function') unreadCountUnsub(); // 🔔 Clean up unread count listener
     notifBadge.style.display='none';
     disableColorZone();
     $('#quotaText').textContent=`0/${MAX_PINGS_PER_DAY} pings today`;
@@ -2459,7 +2818,8 @@ startRequestsListeners(currentUser.uid);
           const signed = await auth.signInWithCredential(cred);
           const user = signed && signed.user ? signed.user : auth.currentUser;
           if(user){
-            await usersRef.doc(user.uid).set({ email: user.email || null, handle: user.handle || null }, { merge:true });
+            // Do NOT overwrite handle here; only ensure email is stored
+            await usersRef.doc(user.uid).set({ email: user.email || null }, { merge:true });
             forceAuthUI(user);
             await refreshAuthUI(user);
             setTimeout(()=>{ try{ forceAuthUI(auth.currentUser); }catch(_){ } }, 80);
@@ -2501,7 +2861,8 @@ startRequestsListeners(currentUser.uid);
   /* --------- Map --------- */
   const map = L.map('map',{ center:DEFAULT_CENTER, zoom:12, minZoom:0, maxZoom:22, zoomAnimation:true, markerZoomAnimation:true, fadeAnimation:true, zoomSnap:.5, wheelPxPerZoomLevel:45, wheelDebounceTime:40, scrollWheelZoom:true, doubleClickZoom:false, dragging:true, touchZoom:'center', zoomControl:false });
   // Hotspot overlay pane (below markers, above inner overlay)
-  const HOTSPOT_RADIUS_M = 100;
+  const HOTSPOT_RADIUS_M = 160; // 🎯 1.6x the original 100m radius
+  const HOTSPOT_MIN_PINGS = 15; // 🎯 Minimum 15 pings required for hotspot
   const HOTSPOT_MIN_CENTER_SEP_M = 150;
   const HOTSPOT_MAX_CLUSTERS = 3;
   try{ map.createPane('hotspotPane'); map.getPane('hotspotPane').style.zIndex = 500; }catch(_){ }
@@ -2519,12 +2880,18 @@ startRequestsListeners(currentUser.uid);
   function drawHotspots(list){ if(!hotspotsEnabled){ return; } if(filterMode!=='all'){ clearHotspot(); return; } clearHotspot(); if(!list || !list.length) return;
     list.forEach((data,idx)=>{
       if(typeof data.lat!== 'number' || typeof data.lon!== 'number') return;
-      const circle = L.circle([data.lat, data.lon], { radius: HOTSPOT_RADIUS_M, color:'#1d4ed8', weight:2, opacity:.9, fillColor:'#1d4ed8', fillOpacity:.18, pane:'hotspotPane' }).addTo(map);
+      // 🎯 Light red circle with no border, same translucency
+      const circle = L.circle([data.lat, data.lon], { 
+        radius: HOTSPOT_RADIUS_M, 
+        color: 'transparent', // 🎯 No rim/border
+        weight: 0, // 🎯 No border weight
+        opacity: 0, // 🎯 No border opacity
+        fillColor: '#ff6b6b', // 🎯 Light red color
+        fillOpacity: .18, // 🎯 Same translucency as before
+        pane: 'hotspotPane' 
+      }).addTo(map);
       hotspotLayers.push(circle);
-      const labelHtml = `<div class=\"hotspot-label\">Hotspot ${idx+1} (${data.count||0})</div>`;
-      const icon = L.divIcon({ className:'', html:labelHtml, iconSize:null });
-      const label = L.marker([data.lat, data.lon], { icon, pane:'hotspotPane', interactive:false }).addTo(map);
-      hotspotLayers.push(label);
+      // 🎯 NO LABEL - users should see it's a hotspot based on ping count
     });
   }
 
@@ -2558,6 +2925,8 @@ startRequestsListeners(currentUser.uid);
       let best=null;
       for(let i=0;i<arr.length;i++){
         const cand=evaluateCenter(arr[i], arr); if(!cand) continue;
+        // 🎯 Enforce minimum ping count requirement
+        if(cand.count < HOTSPOT_MIN_PINGS) continue; // Must have at least 15 pings
         let tooClose=false; for(const prev of selected){ const d=L.latLng(prev.lat,prev.lon).distanceTo([cand.lat,cand.lon]); if(d < HOTSPOT_MIN_CENTER_SEP_M){ tooClose=true; break; } }
         if(tooClose) continue;
         if(!best || cand.count>best.count || (cand.count===best.count && cand.avgDist<best.avgDist)) best=cand;
@@ -2984,9 +3353,119 @@ startRequestsListeners(currentUser.uid);
   }
   startLive();
 
+  // ⏰ AUTO-UPDATE TIMESTAMPS: Refresh relative times every 30 seconds
+  setInterval(() => {
+    try {
+      // Update timestamps in comments
+      document.querySelectorAll('.comment small').forEach(small => {
+        const commentDiv = small.closest('.comment');
+        if(!commentDiv) return;
+        // Try to extract timestamp from data attribute if we add one, otherwise skip
+        // For now, just re-render open sheet's comments (will be handled by listener)
+      });
+      
+      // Update ping sheet meta if open
+      const sheetMetaEl = document.getElementById('sheetMeta');
+      if(sheetMetaEl && openId) {
+        const ping = lastPingCache.get(openId);
+        if(ping && ping.createdAt) {
+          const created = ping.createdAt?.toDate ? ping.createdAt.toDate().getTime() : null;
+          if(created) {
+            const currentText = sheetMetaEl.textContent;
+            const parts = currentText.split(' • ');
+            if(parts.length > 0) {
+              // Replace last part (timestamp) with fresh one
+              parts[parts.length - 1] = timeAgo(created);
+              sheetMetaEl.textContent = parts.join(' • ');
+            }
+          }
+        }
+      }
+      
+      console.log('⏰ Refreshed timestamps');
+    } catch(err) {
+      console.error('Error refreshing timestamps:', err);
+    }
+  }, 30000); // 30 seconds
+
+  // ⌨️ KEYBOARD SHORTCUTS: Power user features
+  document.addEventListener('keydown', (e) => {
+    // Don't trigger shortcuts if user is typing in an input/textarea
+    const isTyping = ['INPUT', 'TEXTAREA'].includes(e.target.tagName);
+    
+    // ESC: Close any open modal or sheet
+    if(e.key === 'Escape') {
+      const openModals = document.querySelectorAll('.modal.open');
+      if(openModals.length > 0) {
+        openModals.forEach(modal => modal.classList.remove('open'));
+        applyModalOpenClass();
+        e.preventDefault();
+        return;
+      }
+      
+      const openSheet = document.querySelector('.sheet.open');
+      if(openSheet) {
+        openSheet.classList.remove('open');
+        if(openUnsub) openUnsub();
+        if(openCommentsUnsub) openCommentsUnsub();
+        openId = null;
+        applyModalOpenClass();
+        e.preventDefault();
+        return;
+      }
+    }
+    
+    if(isTyping) return; // Don't trigger letter shortcuts while typing
+    
+    // N: New ping (if signed in and inside circle)
+    if(e.key === 'n' || e.key === 'N') {
+      if(currentUser && !currentUser.isAnonymous) {
+        try {
+          openModal('createModal');
+          // Focus on text input
+          setTimeout(() => {
+            const pingTextEl = document.getElementById('pingText');
+            if(pingTextEl) pingTextEl.focus();
+          }, 100);
+        } catch(_) {}
+        e.preventDefault();
+      }
+    }
+    
+    // P: Open profile
+    if(e.key === 'p' || e.key === 'P') {
+      if(currentUser && !currentUser.isAnonymous) {
+        try {
+          openModal('profileModal');
+        } catch(_) {}
+        e.preventDefault();
+      }
+    }
+    
+    // B or M: Open notifications
+    if(e.key === 'b' || e.key === 'B' || e.key === 'm' || e.key === 'M') {
+      if(currentUser && !currentUser.isAnonymous) {
+        try {
+          openModal('notifsModal');
+        } catch(_) {}
+        e.preventDefault();
+      }
+    }
+    
+    // ?: Show keyboard shortcuts help
+    if(e.key === '?') {
+      showToast(`Keyboard Shortcuts:\nN = New Ping\nP = Profile\nB/M = Notifications\nESC = Close\n? = This help`, 'success');
+      e.preventDefault();
+    }
+  });
+  
+  console.log('⌨️ Keyboard shortcuts enabled. Press ? for help.');
+
   /* --------- What You Missed (>=1h idle) --------- */
   const MISSED_LAST_SEEN_KEY = 'htbt_last_seen_ts';
-  const MISSED_THRESHOLD_MS = 1*3600*1000; // 1 hour instead of 12 hours
+  const MISSED_THRESHOLD_MS = 15*60*1000; // 🎯 15 minutes (optimized from 1 hour)
+  const MISSED_CHECK_COOLDOWN_MS = 60*1000; // 🛡️ Only check once per minute to avoid spam
+  let lastMissedCheck = 0; // Track when we last ran the check
   const missedCard = document.getElementById('missedCard');
   const missedText = document.getElementById('missedText');
   const missedMeta = document.getElementById('missedMeta');
@@ -2996,36 +3475,14 @@ startRequestsListeners(currentUser.uid);
   function markSeen(){ try{ localStorage.setItem(MISSED_LAST_SEEN_KEY, String(Date.now())); }catch(_){ } }
   function getLastSeen(){ try{ const v=Number(localStorage.getItem(MISSED_LAST_SEEN_KEY)||'0'); return Number.isFinite(v)? v:0; }catch(_){ return 0; } }
 
-  async function showWhatYouMissedIfAny(){
-    try{
-      const lastSeen = getLastSeen();
-      console.log('What you missed check:', { lastSeen, threshold: MISSED_THRESHOLD_MS, timeSince: Date.now() - lastSeen });
-      if(!lastSeen) { markSeen(); return; }
-      if(Date.now()-lastSeen < MISSED_THRESHOLD_MS) return;
-      
-      // Collect all live pings from cache (top 3 current pings, excluding Ping of the Week)
-      const list = [];
-      lastPingCache.forEach((p)=>{
-        if(p.status !== 'live') return; // Only show pings that are still up/live
-        if(currentPotw && p.id === currentPotw.id) return; // Exclude Ping of the Week
-        // Respect visibility; reuse shouldShow minus timeWindow constraint
-        const keepTime = timeWindow; timeWindow='any'; const ok=shouldShow(p); timeWindow=keepTime; if(!ok) return;
-        list.push(p);
-      });
-      console.log('What you missed candidates:', list.length, 'from cache size:', lastPingCache.size);
-      
-      // Always show the card after 1 hour, regardless of ping count
+  // Helper function to render missed pings card (removes code duplication)
+  function renderMissedPingsCard(topPings, lastSeenTs, testMode = false){
       let displayHTML = '';
       let viewButtonEnabled = false;
-      let topPings = [];
       
-      if(list.length === 0) {
+    if(topPings.length === 0) {
         displayHTML = '<div class="ping-item">No new pings since your last visit</div>';
       } else {
-        // Sort by net likes desc, then recency
-        list.sort((a,b)=>{ const an=Math.max(0,(a.likes||0)-(a.dislikes||0)); const bn=Math.max(0,(b.likes||0)-(b.dislikes||0)); if(bn!==an) return bn-an; const at=a.createdAt?.toDate? a.createdAt.toDate().getTime():0; const bt=b.createdAt?.toDate? b.createdAt.toDate().getTime():0; return bt-at; });
-        topPings = list.slice(0,3);
-        
         displayHTML = topPings.map((p, i) => {
           const netLikes = Math.max(0, (p.likes||0) - (p.dislikes||0));
           const authorName = p.authorName || 'Anonymous';
@@ -3055,7 +3512,15 @@ startRequestsListeners(currentUser.uid);
       }
       
       if(missedText) missedText.innerHTML = displayHTML;
-      if(missedMeta){ const diff=Math.round((Date.now()-lastSeen)/3600000); missedMeta.textContent = `${diff}h since your last visit`; }
+    if(missedMeta){ 
+      if(testMode){
+        missedMeta.textContent = 'Test mode - showing current pings';
+      } else {
+        const diff = Math.round((Date.now()-lastSeenTs)/3600000); 
+        missedMeta.textContent = `${diff}h since your last visit`;
+      }
+    }
+    
       if(missedView){ 
         missedView.disabled = !viewButtonEnabled;
         if(viewButtonEnabled && topPings.length > 0) {
@@ -3066,16 +3531,17 @@ startRequestsListeners(currentUser.uid);
               if(ping) {
                 map.setView([ping.lat, ping.lon], 16, { animate:true });
                 openSheet(ping.id);
-                // Move to next ping for next click
-                currentPingIndex = (currentPingIndex + 1) % topPings.length;
-                // Update button text to show progress
-                missedView.textContent = `View ${currentPingIndex + 1}/${topPings.length}`;
-                // Reset after viewing all pings
-                if(currentPingIndex === 0) {
+              // Move to next ping
+              currentPingIndex++;
+              // After viewing all pings, hide card automatically
+              if(currentPingIndex >= topPings.length) {
                   setTimeout(() => {
                     if(missedCard) missedCard.style.display='none';
                     markSeen();
-                  }, 1000);
+                }, 500);
+              } else {
+                // Update button text to show progress
+                missedView.textContent = `View ${currentPingIndex + 1}/${topPings.length}`;
                 }
               }
             } catch(_) { 
@@ -3089,11 +3555,45 @@ startRequestsListeners(currentUser.uid);
           missedView.onclick=()=>{ if(missedCard) missedCard.style.display='none'; markSeen(); }
         }
       }
+    
       if(missedClose){ missedClose.onclick=()=>{ if(missedCard) missedCard.style.display='none'; markSeen(); }; }
       if(missedCard) {
         missedCard.style.display='block';
-        console.log('What you missed card shown with', list.length, 'items');
+      console.log('What you missed card shown with', topPings.length, 'items');
+    }
+  }
+
+  async function showWhatYouMissedIfAny(){
+    try{
+      // 🛡️ OPTIMIZATION: Cooldown to prevent repeated checks
+      const now = Date.now();
+      if(now - lastMissedCheck < MISSED_CHECK_COOLDOWN_MS) {
+        console.log('⏳ Skipping missed check - cooldown active');
+        return;
       }
+      lastMissedCheck = now;
+      
+      const lastSeen = getLastSeen();
+      console.log('What you missed check:', { lastSeen, threshold: MISSED_THRESHOLD_MS, timeSince: now - lastSeen });
+      if(!lastSeen) { markSeen(); return; }
+      if(now - lastSeen < MISSED_THRESHOLD_MS) return;
+      
+      // Collect all live pings from cache (top 3 current pings, excluding Ping of the Week)
+      const list = [];
+      lastPingCache.forEach((p)=>{
+        if(p.status !== 'live') return; // Only show pings that are still up/live
+        if(currentPotw && p.id === currentPotw.id) return; // Exclude Ping of the Week
+        // Respect visibility; reuse shouldShow minus timeWindow constraint
+        const keepTime = timeWindow; timeWindow='any'; const ok=shouldShow(p); timeWindow=keepTime; if(!ok) return;
+        list.push(p);
+      });
+      console.log('What you missed candidates:', list.length, 'from cache size:', lastPingCache.size);
+      
+      // Sort by net likes desc, then recency
+      list.sort((a,b)=>{ const an=Math.max(0,(a.likes||0)-(a.dislikes||0)); const bn=Math.max(0,(b.likes||0)-(b.dislikes||0)); if(bn!==an) return bn-an; const at=a.createdAt?.toDate? a.createdAt.toDate().getTime():0; const bt=b.createdAt?.toDate? b.createdAt.toDate().getTime():0; return bt-at; });
+      const topPings = list.slice(0,3);
+      
+      renderMissedPingsCard(topPings, lastSeen, false);
     }catch(e){ console.error('What you missed error:', e); markSeen(); }
   }
   // Run shortly after live starts, with retry logic for cache population
@@ -3135,86 +3635,11 @@ startRequestsListeners(currentUser.uid);
     });
     console.log('Test candidates:', list.length, 'from cache size:', lastPingCache.size);
     
-    // Always show the card, regardless of ping count
-    let displayHTML = '';
-    let viewButtonEnabled = false;
-    let topPings = [];
-    
-    if(list.length === 0) {
-      displayHTML = '<div class="ping-item">No new pings since your last visit</div>';
-    } else {
       // Sort by net likes desc, then recency
       list.sort((a,b)=>{ const an=Math.max(0,(a.likes||0)-(a.dislikes||0)); const bn=Math.max(0,(b.likes||0)-(b.dislikes||0)); if(bn!==an) return bn-an; const at=a.createdAt?.toDate? a.createdAt.toDate().getTime():0; const bt=b.createdAt?.toDate? b.createdAt.toDate().getTime():0; return bt-at; });
-      topPings = list.slice(0,3);
-      
-      displayHTML = topPings.map((p, i) => {
-        const netLikes = Math.max(0, (p.likes||0) - (p.dislikes||0));
-        const authorName = p.authorName || 'Anonymous';
-        const timeAgo = p.createdAt?.toDate ? 
-          (() => {
-            const diffMs = Date.now() - p.createdAt.toDate().getTime();
-            const diffMins = Math.floor(diffMs / 60000);
-            const diffHours = Math.floor(diffMins / 60);
-            if (diffHours > 0) {
-              return `${diffHours}h ${diffMins % 60}m ago`;
-            } else {
-              return `${diffMins}m ago`;
-            }
-          })() : 
-          'Unknown time';
-        
-        return `
-          <div class="ping-item">
-            <strong>${i+1}. ${String(p.text||'Ping')}</strong> (${netLikes}★)
-            <div class="ping-author">by ${authorName}</div>
-            <div class="ping-time">${timeAgo}</div>
-          </div>
-        `;
-      }).join('');
-      
-      viewButtonEnabled = topPings.length > 0;
-    }
+    const topPings = list.slice(0,3);
     
-    if(missedText) missedText.innerHTML = displayHTML;
-    if(missedMeta){ missedMeta.textContent = 'Test mode - showing current pings'; }
-    if(missedView){ 
-      missedView.disabled = !viewButtonEnabled;
-      if(viewButtonEnabled && topPings.length > 0) {
-        let currentPingIndex = 0;
-        missedView.onclick = () => {
-          try {
-            const ping = topPings[currentPingIndex];
-            if(ping) {
-              map.setView([ping.lat, ping.lon], 16, { animate:true });
-              openSheet(ping.id);
-              // Move to next ping for next click
-              currentPingIndex = (currentPingIndex + 1) % topPings.length;
-              // Update button text to show progress
-              missedView.textContent = `View ${currentPingIndex + 1}/${topPings.length}`;
-              // Reset after viewing all pings
-              if(currentPingIndex === 0) {
-                setTimeout(() => {
-                  if(missedCard) missedCard.style.display='none';
-                  markSeen();
-                }, 1000);
-              }
-            }
-          } catch(_) { 
-            if(missedCard) missedCard.style.display='none'; 
-            markSeen(); 
-          }
-        };
-        // Set initial button text
-        missedView.textContent = `View 1/${topPings.length}`;
-      } else {
-        missedView.onclick=()=>{ if(missedCard) missedCard.style.display='none'; markSeen(); }
-      }
-    }
-    if(missedClose){ missedClose.onclick=()=>{ if(missedCard) missedCard.style.display='none'; markSeen(); }; }
-    if(missedCard) {
-      missedCard.style.display='block';
-      console.log('Test card shown with', list.length, 'items');
-    }
+    renderMissedPingsCard(topPings, getLastSeen(), true);
   };
   
   window.clearMissedTimestamp = function() {
@@ -3881,8 +4306,19 @@ startRequestsListeners(currentUser.uid);
   function validText(s){ if(!s) return false; if(/\b[A-Z][a-z]+\s+[A-Z][a-z]+\b/.test(s)) return false; return true; }
   async function getUserDoc(uid){ const d=await usersRef.doc(uid).get(); return d.exists? d.data() : null; }
 
+  let isSubmittingPing = false; // 🛡️ DUPLICATE PREVENTION: Lock flag
+
   $('#submitPing').onclick=async()=>{
+    // 🛡️ Prevent duplicate submissions
+    if(isSubmittingPing) {
+      console.log('🚫 Ping submission already in progress');
+      return;
+    }
+    
     try{
+      isSubmittingPing = true; // Lock
+      $('#submitPing').disabled = true; // Disable button visually
+      
       if(!currentUser) return showToast('Sign in first');
       if(currentUser.isAnonymous) return showToast("Guests can't post. Create an account.");
       const udoc = await getUserDoc(currentUser.uid) || {};
@@ -3982,12 +4418,30 @@ startRequestsListeners(currentUser.uid);
       closeModal('createModal'); $('#pingText').value=''; $('#lat').value=''; $('#lon').value=''; if(attachInput) attachInput.value='';
       await refreshQuota(currentUser.uid);
       
-      // SEND NOTIFICATIONS FOR MENTIONS - SIMPLE AND CLEAN!
+      // SEND NOTIFICATIONS FOR MENTIONS - WITH VISIBILITY CHECK!
       console.log('📧 Sending notifications for mentions...');
       if (resolvedMentions.length === 0) {
         console.log('📧 No mentions to notify about');
       } else {
-        for (const mention of resolvedMentions) {
+        // 👥 Expand @friends to individual friends for notifications
+        const notificationTargets = await expandMentionsForNotifications(resolvedMentions);
+        console.log(`📧 Expanded to ${notificationTargets.length} notification targets`);
+        
+        // For private pings, only notify friends
+        let allowedUids = new Set();
+        if(visibility === 'private'){
+          // Get author's friend list using helper
+          allowedUids = await getFriendsList(currentUser.uid);
+          console.log(`📧 Private ping - only notifying ${allowedUids.size} friends`);
+        }
+        
+        for (const mention of notificationTargets) {
+          // Skip mention if private ping and user is not a friend
+          if(visibility === 'private' && !allowedUids.has(mention.uid)){
+            console.log(`📧 Skipping mention @${mention.handle} - not a friend (private ping)`);
+            continue;
+          }
+          
           console.log(`📧 Sending notification for mention: @${mention.handle} (${mention.uid})`);
           await sendNotification(mention.uid, 'mention', {
             pingId: ref.id,
@@ -3995,10 +4449,17 @@ startRequestsListeners(currentUser.uid);
             mentionHandle: mention.handle
           });
         }
-        console.log(`📧 Sent ${resolvedMentions.length} mention notifications`);
+        console.log(`📧 Sent mention notifications`);
       }
       showToast('Ping posted');
-    }catch(e){ console.error(e); showToast((e.code||'error')+': '+(e.message||'Error posting')); }
+    }catch(e){ 
+      console.error(e); 
+      showToast((e.code||'error')+': '+(e.message||'Error posting')); 
+    } finally {
+      // 🛡️ Always release lock, even on error
+      isSubmittingPing = false;
+      $('#submitPing').disabled = false;
+    }
   };
 
   /* --------- Sheet / votes / comments / reports --------- */
@@ -4015,13 +4476,31 @@ startRequestsListeners(currentUser.uid);
   const openInMapsBtn=document.getElementById('openInMapsBtn');
   let openId=null, openUnsub=null, openCommentsUnsub=null;
 
+  // 🚀 PERFORMANCE: Comment rendering cache to avoid re-parsing mentions
+  const commentRenderCache = new Map(); // commentId -> {text, mentions, rendered HTML}
+
   function openSheet(id){
     if(openUnsub) openUnsub(); if(openCommentsUnsub) openCommentsUnsub();
+    commentRenderCache.clear(); // Clear cache when opening new ping
     openId=id; sheet.classList.add('open'); applyModalOpenClass();
 
     openUnsub = pingsRef.doc(id).onSnapshot(doc=>{
       if(!doc.exists){ sheet.classList.remove('open'); return; }
       const p={id:doc.id, ...doc.data()}; lastPingCache.set(p.id,p);
+      
+      // 🔒 SECURITY CHECK: Verify user has permission to view this ping
+      if(p.visibility === 'private') {
+        const isAuthor = currentUser && p.authorId === currentUser.uid;
+        const isFriend = myFriends && myFriends.has && myFriends.has(p.authorId);
+        
+        if(!isAuthor && !isFriend) {
+          console.warn('🔒 Access denied: User does not have permission to view private ping', p.id);
+          sheet.classList.remove('open');
+          showToast('This ping is private', 'error');
+          return;
+        }
+      }
+      
       // Populate author row (visible to everyone for public; private limited by shouldShow)
       (async ()=>{
         try{
@@ -4128,6 +4607,26 @@ startRequestsListeners(currentUser.uid);
         }
       }catch(_){ }
 
+      // 🚩 Toggle Report button visibility (only show for other people's content)
+      try{
+        const reportBtn=document.getElementById('reportPingBtn');
+        if(reportBtn){
+          const mine = (currentUser && p.authorId===currentUser.uid);
+          const signedIn = !!currentUser;
+          // Show report button if: signed in AND not your own ping
+          reportBtn.style.display = (signedIn && !mine) ? 'inline-flex' : 'none';
+          if(signedIn && !mine){
+            reportBtn.onclick = ()=>{
+              // Store current ping ID for report submission
+              window.currentReportPingId = p.id;
+              openModal('reportModal');
+            };
+          } else {
+            reportBtn.onclick = null;
+          }
+        }
+      }catch(_){ }
+
       renderVoteBar(p); upsertMarker(p);
     });
 
@@ -4136,9 +4635,32 @@ startRequestsListeners(currentUser.uid);
         const c=d.data(); const when=c.createdAt||null;
         const div=document.createElement('div'); div.className='comment';
         const textSpan=document.createElement('span');
+        textSpan.style.display='inline'; // Ensure inline display for click events
+        textSpan.style.pointerEvents='auto'; // Ensure pointer events work
+        
+        // 🚀 MEMOIZATION: Check cache first to avoid re-parsing mentions
+        const cacheKey = d.id;
+        const cached = commentRenderCache.get(cacheKey);
+        const textChanged = !cached || cached.text !== c.text || JSON.stringify(cached.mentions) !== JSON.stringify(c.mentions);
+        
+        if(textChanged) {
         // Render mentions if present
-        if(Array.isArray(c.mentions) && c.mentions.length){ renderTextWithMentions(textSpan, String(c.text||''), c.mentions); }
+          if(Array.isArray(c.mentions) && c.mentions.length){ 
+            console.log('Rendering comment with mentions:', c.mentions);
+            renderTextWithMentions(textSpan, String(c.text||''), c.mentions); 
+          }
         else { textSpan.textContent=String(c.text||''); }
+          
+          // Cache the rendered HTML
+          commentRenderCache.set(cacheKey, {
+            text: c.text,
+            mentions: c.mentions,
+            html: textSpan.innerHTML
+          });
+        } else {
+          // Use cached HTML
+          textSpan.innerHTML = cached.html;
+        }
         const br=document.createElement('br');
         const small=document.createElement('small'); small.textContent=timeAgo(when);
         div.appendChild(textSpan); div.appendChild(br); div.appendChild(small);
@@ -4189,7 +4711,7 @@ startRequestsListeners(currentUser.uid);
     if(removeVideoBtn){ removeVideoBtn.onclick = clearAll; }
   }catch(_){ }
 
-  function renderVoteBar(p){
+  async function renderVoteBar(p){
     reactBar.innerHTML='';
     const disabled = (!currentUser || currentUser.isAnonymous);
     const mk=(type,label,count)=>{
@@ -4199,7 +4721,101 @@ startRequestsListeners(currentUser.uid);
       else { b.onclick=()=>setVote(p.id,type).catch(console.error); }
       return b;
     };
-    reactBar.appendChild(mk('like','👍',p.likes)); reactBar.appendChild(mk('dislike','👎',p.dislikes));
+    reactBar.appendChild(mk('like','👍',p.likes)); 
+    reactBar.appendChild(mk('dislike','👎',p.dislikes));
+    
+    // Show which friends reacted (only if signed in and have friends)
+    if(currentUser && !currentUser.isAnonymous && myFriends && myFriends.size > 0){
+      try{
+        // Query votes for this ping
+        const votesSnapshot = await votesRef.where('pingId', '==', p.id).get();
+        const friendLikes = [];
+        const friendDislikes = [];
+        
+        votesSnapshot.forEach(voteDoc => {
+          const vote = voteDoc.data();
+          if(vote.userId && myFriends.has(vote.userId)){
+            if(vote.type === 'like') friendLikes.push(vote.userId);
+            else if(vote.type === 'dislike') friendDislikes.push(vote.userId);
+          }
+        });
+        
+        // Display friend reactions
+        if(friendLikes.length > 0 || friendDislikes.length > 0){
+          const friendSection = document.createElement('div');
+          friendSection.style.cssText = 'margin-top:8px;padding-top:8px;border-top:1px solid #f2f2f2;font-size:12px;color:#6b7280';
+          
+          if(friendLikes.length > 0){
+            const likeDiv = document.createElement('div');
+            likeDiv.style.marginBottom = '4px';
+            likeDiv.innerHTML = '<strong style="color:#0f8a3b">👍 Friends who liked:</strong> ';
+            
+            for(let i = 0; i < Math.min(friendLikes.length, 5); i++){
+              const uid = friendLikes[i];
+              const handleSpan = document.createElement('span');
+              handleSpan.style.cssText = 'color:#1d4ed8;font-weight:600;cursor:pointer;margin-right:6px';
+              handleSpan.textContent = '@...';
+              handleSpan.onclick = ()=> openOtherProfile(uid);
+              
+              // Fetch handle asynchronously
+              (async ()=>{
+                try{
+                  const handle = await getHandleForUid(uid);
+                  handleSpan.textContent = handle;
+                }catch(_){}
+              })();
+              
+              likeDiv.appendChild(handleSpan);
+            }
+            
+            if(friendLikes.length > 5){
+              const more = document.createElement('span');
+              more.textContent = `+${friendLikes.length - 5} more`;
+              more.style.color = '#9ca3af';
+              likeDiv.appendChild(more);
+            }
+            
+            friendSection.appendChild(likeDiv);
+          }
+          
+          if(friendDislikes.length > 0){
+            const dislikeDiv = document.createElement('div');
+            dislikeDiv.innerHTML = '<strong style="color:#ef4444">👎 Friends who disliked:</strong> ';
+            
+            for(let i = 0; i < Math.min(friendDislikes.length, 5); i++){
+              const uid = friendDislikes[i];
+              const handleSpan = document.createElement('span');
+              handleSpan.style.cssText = 'color:#1d4ed8;font-weight:600;cursor:pointer;margin-right:6px';
+              handleSpan.textContent = '@...';
+              handleSpan.onclick = ()=> openOtherProfile(uid);
+              
+              // Fetch handle asynchronously
+              (async ()=>{
+                try{
+                  const handle = await getHandleForUid(uid);
+                  handleSpan.textContent = handle;
+                }catch(_){}
+              })();
+              
+              dislikeDiv.appendChild(handleSpan);
+            }
+            
+            if(friendDislikes.length > 5){
+              const more = document.createElement('span');
+              more.textContent = `+${friendDislikes.length - 5} more`;
+              more.style.color = '#9ca3af';
+              dislikeDiv.appendChild(more);
+            }
+            
+            friendSection.appendChild(dislikeDiv);
+          }
+          
+          reactBar.appendChild(friendSection);
+        }
+      }catch(err){
+        console.error('Error loading friend reactions:', err);
+      }
+    }
   }
 
   // Vote transaction with NET-like milestones (firstNetAt.{N})
@@ -4208,6 +4824,7 @@ startRequestsListeners(currentUser.uid);
     if(currentUser.isAnonymous) return showToast("Guests can't react");
     const vid=`${pingId}_${currentUser.uid}`;
     let awardResult=null;
+    let milestoneData=null;
     await db.runTransaction(async tx=>{
       const pRef=pingsRef.doc(pingId), vRef=votesRef.doc(vid);
       const [pSnap,vSnap]=await Promise.all([tx.get(pRef), tx.get(vRef)]);
@@ -4250,6 +4867,23 @@ startRequestsListeners(currentUser.uid);
       const up   = Math.max(0, afterMil - beforeMil);
       const down = Math.max(0, beforeMil - afterMil);
       awardResult = { authorId: p.authorId || pSnap.data().authorId || null, up, down };
+      
+      // Track milestone notifications (5, 10, 25, 50, 100)
+      const notificationMilestones = [5, 10, 25, 50, 100];
+      const crossedMilestones = [];
+      for(const milestone of notificationMilestones){
+        if(beforeNet < milestone && afterNet >= milestone){
+          crossedMilestones.push(milestone);
+        }
+      }
+      if(crossedMilestones.length > 0 && p.authorId){
+        milestoneData = {
+          authorId: p.authorId,
+          milestones: crossedMilestones,
+          pingText: p.text || 'Your ping',
+          pingId: pingId
+        };
+      }
     }).catch(e=>console.error(e));
     // Apply PP delta based on milestone crossings
     try{
@@ -4258,6 +4892,22 @@ startRequestsListeners(currentUser.uid);
         if(delta!==0){ await awardPoints(awardResult.authorId, delta, 'like_milestones'); }
       }
     }catch(_){ }
+    
+    // Send milestone notifications
+    try{
+      if(milestoneData && milestoneData.authorId !== currentUser.uid){
+        for(const milestone of milestoneData.milestones){
+          console.log(`📧 Sending milestone notification for ${milestone} likes to ${milestoneData.authorId}`);
+          await sendNotification(milestoneData.authorId, 'like_milestone', {
+            pingId: milestoneData.pingId,
+            milestone: milestone,
+            pingText: milestoneData.pingText
+          });
+        }
+      }
+    }catch(err){
+      console.error('Error sending milestone notifications:', err);
+    }
   }
 
   $('#sendComment').onclick=async()=>{
@@ -4285,12 +4935,65 @@ startRequestsListeners(currentUser.uid);
         mentions: resolvedMentions 
       });
       
-      // SEND NOTIFICATIONS FOR MENTIONS IN COMMENTS
+      // SEND FRIEND COMMENT NOTIFICATION TO PING AUTHOR
+      try{
+        const pingDoc = await pingsRef.doc(openId).get();
+        if(pingDoc.exists){
+          const pingData = pingDoc.data();
+          const pingAuthorId = pingData.authorId;
+          
+          // Don't notify yourself
+          if(pingAuthorId && pingAuthorId !== currentUser.uid){
+            // Check if commenter is a friend of ping author using helper
+            const authorFriends = await getFriendsList(pingAuthorId);
+            if(authorFriends.has(currentUser.uid)){
+              console.log(`📧 Sending friend comment notification to ping author ${pingAuthorId}`);
+              await sendNotification(pingAuthorId, 'friend_comment', {
+                pingId: openId,
+                commentText: t,
+                commenterId: currentUser.uid
+              });
+            } else {
+              console.log(`📧 Not sending comment notification - commenter is not a friend of author`);
+            }
+          }
+        }
+      }catch(err){
+        console.error('Error sending friend comment notification:', err);
+      }
+      
+      // SEND NOTIFICATIONS FOR MENTIONS IN COMMENTS - WITH VISIBILITY CHECK!
       console.log('📧 Sending notifications for comment mentions...');
       if (resolvedMentions.length === 0) {
         console.log('📧 No mentions to notify about in comment');
       } else {
-        for (const mention of resolvedMentions) {
+        // 👥 Expand @friends to individual friends for notifications
+        const notificationTargets = await expandMentionsForNotifications(resolvedMentions);
+        console.log(`📧 Expanded to ${notificationTargets.length} notification targets for comments`);
+        
+        // Check ping visibility and author's friends
+        let allowedUids = new Set();
+        try{
+          const pingDoc = await pingsRef.doc(openId).get();
+          if(pingDoc.exists){
+            const pingData = pingDoc.data();
+            if(pingData.visibility === 'private' && pingData.authorId){
+              // Get ping author's friend list using helper
+              allowedUids = await getFriendsList(pingData.authorId);
+              console.log(`📧 Private ping - only notifying ${allowedUids.size} friends for comment mentions`);
+            }
+          }
+        }catch(err){
+          console.error('Error checking ping visibility for comment mentions:', err);
+        }
+        
+        for (const mention of notificationTargets) {
+          // Skip if private ping and mentioned user is not a friend of ping author
+          if(allowedUids.size > 0 && !allowedUids.has(mention.uid)){
+            console.log(`📧 Skipping comment mention @${mention.handle} - not a friend (private ping)`);
+            continue;
+          }
+          
           console.log(`📧 Sending comment notification for mention: @${mention.handle} (${mention.uid})`);
           await sendNotification(mention.uid, 'mention_comment', {
             pingId: openId,
@@ -4298,7 +5001,7 @@ startRequestsListeners(currentUser.uid);
             mentionHandle: mention.handle
           });
         }
-        console.log(`📧 Sent ${resolvedMentions.length} comment mention notifications`);
+        console.log(`📧 Sent comment mention notifications`);
       }
     }catch(err){
       console.error('Error posting comment:', err);
@@ -4381,6 +5084,23 @@ startRequestsListeners(currentUser.uid);
     try{ const d=await usersRef.doc(uid).get(); const handle=d.exists? (d.data().handle||null):null; const photoURL=d.exists? (d.data().photoURL||null):null; const displayName = handle? ('@'+handle) : ('@user'+String(uid).slice(0,6)); const out = { handle, photoURL, displayName }; mentionsCache.set(uid,out); return out; }catch(_){ return { handle:null, photoURL:null, displayName:'Friend' }; }
   }
 
+  // HELPER: Get friend list for a user (with caching)
+  const friendListCache = new Map(); // uid -> Set of friend UIDs
+  async function getFriendsList(uid){
+    if(!uid) return new Set();
+    if(friendListCache.has(uid)) return friendListCache.get(uid);
+    try{
+      const userDoc = await usersRef.doc(uid).get();
+      const friendIds = userDoc.exists && Array.isArray(userDoc.data().friendIds) ? userDoc.data().friendIds : [];
+      const friendSet = new Set(friendIds);
+      friendListCache.set(uid, friendSet);
+      return friendSet;
+    }catch(err){
+      console.error('Error fetching friends list:', err);
+      return new Set();
+    }
+  }
+
   // Mention suggestions (handles + @friends)
   function hideMentionSuggest(){ if(mentionSuggest){ mentionSuggest.style.display='none'; mentionSuggest.innerHTML=''; } }
   function showMentionSuggest(items, anchorEl){
@@ -4436,11 +5156,55 @@ startRequestsListeners(currentUser.uid);
       });
     }catch(_){ }
     // if few results, try global handle lookup by prefix
+    // 🔒 FIXED: Validate handles but DON'T try to clean up during autocomplete
     if(list.length<5){
       try{
-        const q = await db.collection('handles').where(firebase.firestore.FieldPath.documentId(), '>=', prefixLC).where(firebase.firestore.FieldPath.documentId(), '<=', prefixLC+'\uf8ff').limit(10).get();
-        q.forEach(doc=>{ const h=doc.id; if(!h) return; if(list.find(x=>x.insert==='@'+h)) return; list.push({ label:'@'+h, insert:'@'+h, photoURL:'' }); });
-      }catch(_){ }
+        const q = await db.collection('handles').where(firebase.firestore.FieldPath.documentId(), '>=', prefixLC).where(firebase.firestore.FieldPath.documentId(), '<=', prefixLC+'\uf8ff').limit(20).get();
+        
+        // 🛡️ Validate each handle points to a real user before adding to suggestions
+        const validationPromises = [];
+        const handleDocs = [];
+        q.forEach(doc => {
+          if(!doc.id) return;
+          const uid = doc.data().uid;
+          if(!uid) return;
+          handleDocs.push({ handle: doc.id, uid: uid });
+          validationPromises.push(usersRef.doc(uid).get());
+        });
+        
+        const userDocs = await Promise.all(validationPromises);
+        for(let i = 0; i < handleDocs.length; i++) {
+          const handleDoc = handleDocs[i];
+          const userDoc = userDocs[i];
+          
+          // Skip if user doesn't exist (just skip, don't try to clean up)
+          if(!userDoc.exists) {
+            console.log('⚠️ Skipping orphaned handle:', handleDoc.handle);
+            continue;
+          }
+          
+          const userData = userDoc.data();
+          const userHandle = userData.handle ? String(userData.handle).trim().toLowerCase() : '';
+          
+          // Skip if handles don't match (just skip, don't try to clean up)
+          if(userHandle !== handleDoc.handle.toLowerCase()) {
+            console.log('⚠️ Skipping mismatched handle:', handleDoc.handle, '(user has:', userHandle + ')');
+            continue;
+          }
+          
+          // Valid handle - add to suggestions if not already present
+          if(list.find(x=>x.insert==='@'+handleDoc.handle)) continue;
+          list.push({ 
+            label: '@'+handleDoc.handle, 
+            insert: '@'+handleDoc.handle, 
+            photoURL: userData.photoURL || '' 
+          });
+          
+          if(list.length >= 10) break; // Stop once we have enough suggestions
+        }
+      }catch(err){ 
+        console.error('Error in handle autocomplete:', err);
+      }
     }
     // Clean up: remove empties and dedupe labels; put @friends first, then alpha
     const seen = new Set();
@@ -4491,7 +5255,7 @@ startRequestsListeners(currentUser.uid);
       let handle = udoc.exists ? (udoc.data().handle||null) : null;
       console.log('Current handle from user doc:', handle);
       
-      // CRITICAL: If user already has a handle, verify it exists in handles collection and PRESERVE IT
+      // CRITICAL: If user already has a handle, verify/repair mapping WITHOUT changing the handle
       if(handle) {
         console.log('✅ User has existing handle:', handle);
         
@@ -4502,14 +5266,40 @@ startRequestsListeners(currentUser.uid);
           return; // Locked handle, never change it
         }
         
-        // Verify the handle still exists in the handles collection
-        const handleDoc = await db.collection('handles').doc(handle.toLowerCase()).get();
-        if(handleDoc.exists) {
-          console.log('✅ Handle exists in handles collection, preserving:', handle);
-          return; // Handle is good, don't change anything
+        // Verify the handle mapping in `handles` collection
+        const handleLC = String(handle).toLowerCase();
+        const handleRef = db.collection('handles').doc(handleLC);
+        const handleSnap = await handleRef.get();
+        if(handleSnap.exists) {
+          const ownerUid = handleSnap.data().uid;
+          if(ownerUid === user.uid) {
+            console.log('✅ Handle mapping is correct. Preserving handle:', handle);
+            return; // All good
+          }
+          // Handle claimed by someone else (should be rare) → generate a new one below
+          console.warn('⚠️ Handle mapping points to a different user. Will generate a new handle. handle=', handle, 'owner=', ownerUid);
+          handle = null; // Trigger new handle generation
         } else {
-          console.log('⚠️ Handle missing from handles collection, will recreate:', handle);
-          handle = null; // Will recreate below
+          // Mapping missing → claim it atomically via transaction (do NOT change user's handle)
+          console.log('🛠️ Handle mapping missing. Claiming handle for user:', handle);
+          try{
+            await db.runTransaction(async (tx) => {
+              const snap = await tx.get(handleRef);
+              if(!snap.exists) {
+                tx.set(handleRef, { uid: user.uid, createdAt: firebase.firestore.FieldValue.serverTimestamp() });
+              } else if(snap.data().uid !== user.uid) {
+                throw new Error('Handle was claimed during transaction');
+              }
+              // Ensure user doc has correct normalized case fields
+              tx.set(uref, { handle: handle, handleLC: handleLC }, { merge:true });
+            });
+            console.log('✅ Repaired handle mapping for:', handle);
+            return; // Mapping repaired, nothing else to do
+          }catch(repairErr){
+            console.error('❌ Failed to repair handle mapping:', repairErr);
+            // Fall through to new handle generation as safety
+            handle = null;
+          }
         }
       }
       
@@ -4534,13 +5324,21 @@ startRequestsListeners(currentUser.uid);
                 console.log('✅ Created handle document for:', handle);
               }
             });
-            if(handle) break;
+            if(handle) {
+              // 🧹 Invalidate cache after creating new handle
+              if(typeof invalidateHandleCache === 'function') {
+                invalidateHandleCache(user.uid);
+              }
+              break;
+            }
           }
           console.log('⚠️ Handle taken:', attempt, 'trying next...');
           i++; attempt = (base.slice(0,12) || 'user') + (Math.floor(Math.random()*9000)+1000);
         }
         if(!handle) {
           console.error('❌ Failed to create handle after 50 attempts');
+        } else {
+          console.log('✅ Handle created successfully:', handle);
       }
       }
     }catch(e){ console.error('❌ Ensure handle failed:', e); }
@@ -4686,22 +5484,51 @@ startRequestsListeners(currentUser.uid);
     const outSS = await db.collection('friendRequests').where('from','==',currentUser.uid).where('status','==','pending').get();
 
     const items=[];
-    const seen = new Set();
-    for(const doc of inSS.docs){ if(!seen.has(doc.id)){ items.push({ id:doc.id, dir:'in', ...doc.data() }); seen.add(doc.id); } }
-    for(const doc of outSS.docs){ if(!seen.has(doc.id)){ items.push({ id:doc.id, dir:'out', ...doc.data() }); seen.add(doc.id); } }
+    const seenUsers = new Set(); // FIX: Deduplicate by user, not doc ID
+    // Incoming requests - deduplicate by 'from' UID
+    for(const doc of inSS.docs){ 
+      const fromUid = doc.data().from;
+      if(!seenUsers.has(fromUid)){ 
+        items.push({ id:doc.id, dir:'in', ...doc.data() }); 
+        seenUsers.add(fromUid); 
+      }
+    }
+    // Outgoing requests - deduplicate by 'to' UID
+    for(const doc of outSS.docs){ 
+      const toUid = doc.data().to;
+      if(!seenUsers.has(toUid)){ 
+        items.push({ id:doc.id, dir:'out', ...doc.data() }); 
+        seenUsers.add(toUid); 
+      }
+    }
     if(!items.length){ cont.innerHTML='<div class="muted">No pending requests.</div>'; return; }
+
+    // 🚀 OPTIMIZATION: Batch fetch all user handles at once (fixes N+1 query problem)
+    const uniqueUids = new Set(items.map(it => it.dir === 'in' ? it.from : it.to));
+    const handleMap = new Map(); // UID -> display label
+    
+    // Batch fetch all users in parallel
+    const userFetches = Array.from(uniqueUids).map(async uid => {
+      try {
+        const ud = await usersRef.doc(uid).get();
+        if(ud.exists) {
+          const h = ud.data().handle || '';
+          const disp = ud.data().displayName || ud.data().email || '';
+          handleMap.set(uid, h ? '@' + String(h).trim() : String(disp || 'Friend'));
+        } else {
+          handleMap.set(uid, 'Unknown user');
+        }
+      } catch(_) {
+        handleMap.set(uid, 'Unknown user');
+      }
+    });
+    
+    await Promise.all(userFetches);
 
     cont.innerHTML='';
     for(const it of items){
       const other = (it.dir==='in' ? it.from : it.to);
-      let label='Unknown user';
-      try{
-        const ud = await usersRef.doc(other).get();
-        if(ud.exists){
-          const h = ud.data().handle||''; const disp = ud.data().displayName||ud.data().email||'';
-          label = h ? '@'+String(h).trim() : String(disp||'Friend');
-        }
-      }catch(_){ }
+      const label = handleMap.get(other) || 'Unknown user';
       const row = document.createElement('div'); row.className='req-card';
       row.innerHTML = '<div><strong>'+label+'</strong></div>';
       const actions = document.createElement('div'); actions.className='req-actions';
@@ -4807,7 +5634,7 @@ startRequestsListeners(currentUser.uid);
   if(closeProfileBtn){ closeProfileBtn.onclick = ()=> closeModal('profileModal'); }
   // Sign out button inside profile modal
   const signOutInProfile = document.getElementById('signOutInProfile');
-  if(signOutInProfile){ signOutInProfile.onclick = async ()=>{ try{ await auth.signOut(); closeModal('profileModal'); showToast('Signed out'); }catch(e){ showToast('Sign out failed'); } }; }
+  if(signOutInProfile){ signOutInProfile.onclick = async ()=>{ try{ if(notifUnsub){ notifUnsub(); notifUnsub=null; } await auth.signOut(); closeModal('profileModal'); showToast('Signed out'); }catch(e){ showToast('Sign out failed'); } }; }
   const ownAvatar = document.getElementById('ownProfileAvatar');
   const emailDisplay = document.getElementById('emailDisplay');
   const handleInput = document.getElementById('handleInput');
@@ -4878,6 +5705,10 @@ startRequestsListeners(currentUser.uid);
       showToast('Could not load profile'); 
     }
   }
+  
+  // Expose to window for mention click handlers
+  window.openOtherProfile = openOtherProfile;
+  
   // Use event delegation for dynamic buttons
   document.addEventListener('click', async (e) => {
     if(e.target.id === 'openSettings'){
@@ -4920,12 +5751,167 @@ startRequestsListeners(currentUser.uid);
     if(e.target.id === 'openGift'){ openModal('giftModal'); }
   });
 
-  // Ledger button
+  // 🧾 Ledger button - FIXED with direct event listener
   const ledgerBtn = document.getElementById('ledgerBtn');
-  if(ledgerBtn){ ledgerBtn.onclick = async ()=>{ try{ if(!currentUser) return showToast('Sign in to view'); openModal('ledgerModal'); await renderLedger(); }catch(_){ } }; }
-  const closeLedger = document.getElementById('closeLedger'); if(closeLedger){ closeLedger.onclick = ()=> closeModal('ledgerModal'); }
-  const closeGift = document.getElementById('closeGift'); if(closeGift){ closeGift.onclick = ()=> closeModal('giftModal'); }
-  const closeStore = document.getElementById('closeStore'); if(closeStore){ closeStore.onclick = ()=> closeModal('storeModal'); }
+  if(ledgerBtn){ 
+    console.log('✅ Ledger button found');
+    ledgerBtn.addEventListener('click', async (e)=>{ 
+      e.preventDefault();
+      e.stopPropagation();
+      console.log('🧾 Ledger button clicked!');
+      try{ 
+        if(!currentUser) return showToast('Sign in to view'); 
+        openModal('ledgerModal'); 
+        await renderLedger(); 
+      }catch(err){ 
+        console.error('Ledger error:', err); 
+      } 
+    }); 
+  } else {
+    console.error('❌ Ledger button NOT FOUND!');
+  }
+  // 🔥 FIXED: All modal close handlers with direct event listeners
+  const closeLedger = document.getElementById('closeLedger'); 
+  if(closeLedger){ 
+    console.log('✅ closeLedger found');
+    closeLedger.addEventListener('click', (e)=> { 
+      e.preventDefault(); 
+      e.stopPropagation(); 
+      console.log('Closing ledger modal'); 
+      closeModal('ledgerModal'); 
+    }); 
+  } else {
+    console.error('❌ closeLedger NOT FOUND');
+  }
+  
+  const closeGift = document.getElementById('closeGift'); 
+  if(closeGift){ 
+    console.log('✅ closeGift found');
+    closeGift.addEventListener('click', (e)=> { 
+      e.preventDefault(); 
+      e.stopPropagation(); 
+      console.log('Closing gift modal'); 
+      closeModal('giftModal'); 
+    }); 
+  } else {
+    console.error('❌ closeGift NOT FOUND');
+  }
+  
+  const closeStore = document.getElementById('closeStore'); 
+  if(closeStore){ 
+    console.log('✅ closeStore found');
+    closeStore.addEventListener('click', (e)=> { 
+      e.preventDefault(); 
+      e.stopPropagation(); 
+      console.log('Closing store modal'); 
+      closeModal('storeModal'); 
+    }); 
+  } else {
+    console.error('❌ closeStore NOT FOUND');
+  }
+  
+  // 🚩 Report Modal Handlers
+  const closeReport = document.getElementById('closeReport'); 
+  if(closeReport){ 
+    console.log('✅ closeReport found');
+    closeReport.addEventListener('click', (e)=> {
+      e.preventDefault(); 
+      e.stopPropagation();
+      console.log('Closing report modal');
+      closeModal('reportModal');
+      // Reset form
+      try{
+        document.getElementById('reportCategory').value = '';
+        document.getElementById('reportDetails').value = '';
+        document.getElementById('reportCharCount').textContent = '0';
+        window.currentReportPingId = null;
+      }catch(err){
+        console.error('Error resetting report form:', err);
+      }
+    });
+  } else {
+    console.error('❌ closeReport button NOT FOUND!');
+  }
+  
+  // Character counter for report details
+  const reportDetails = document.getElementById('reportDetails');
+  const reportCharCount = document.getElementById('reportCharCount');
+  if(reportDetails && reportCharCount){
+    reportDetails.oninput = ()=>{
+      reportCharCount.textContent = reportDetails.value.length;
+    };
+  }
+  
+  const submitReport = document.getElementById('submitReport');
+  if(submitReport){ 
+    console.log('✅ submitReport button found');
+    submitReport.addEventListener('click', async (e)=>{
+      e.preventDefault(); 
+      e.stopPropagation();
+      console.log('📝 Submit report clicked');
+      try{
+        if(!currentUser) return showToast('Sign in first','error');
+        
+        const pingId = window.currentReportPingId;
+        if(!pingId) return showToast('No content selected','error');
+        
+        const category = document.getElementById('reportCategory').value;
+        if(!category) return showToast('Please select a reason','warning');
+        
+        const details = (document.getElementById('reportDetails').value || '').trim();
+        
+        // 🔒 RATE LIMITING: Check if user has exceeded daily report limit
+        const today = dateKey(montrealNow());
+        const reportsToday = await db.collection('reports')
+          .where('reporterId', '==', currentUser.uid)
+          .where('date', '==', today)
+          .get();
+        
+        if(reportsToday.size >= 5) {
+          return showToast('Daily report limit reached (5/day)','error');
+        }
+        
+        // 🚫 DUPLICATE CHECK: Check if user already reported this ping
+        const existingReport = await db.collection('reports')
+          .where('reporterId', '==', currentUser.uid)
+          .where('contentId', '==', pingId)
+          .where('contentType', '==', 'ping')
+          .get();
+        
+        if(!existingReport.empty) {
+          return showToast('You already reported this content','warning');
+        }
+        
+        // Submit report
+        await db.collection('reports').add({
+          reporterId: currentUser.uid,
+          contentId: pingId,
+          contentType: 'ping',
+          category: category,
+          details: details,
+          date: today,
+          createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+          status: 'pending'
+        });
+        
+        showToast('Report submitted. Thank you.','success');
+        closeModal('reportModal');
+        
+        // Reset form
+        document.getElementById('reportCategory').value = '';
+        document.getElementById('reportDetails').value = '';
+        document.getElementById('reportCharCount').textContent = '0';
+        window.currentReportPingId = null;
+        
+      }catch(err){ 
+        console.error('Report submission error:', err); 
+        showToast('Failed to submit report','error'); 
+      }
+    });
+  } else {
+    console.error('❌ submitReport button NOT FOUND!');
+  }
+  
   const sendGift = document.getElementById('sendGift');
   if(sendGift){ sendGift.onclick = async ()=>{
     try{
@@ -5008,11 +5994,68 @@ startRequestsListeners(currentUser.uid);
           showToast('Username saved');
           return;
         }
-        const now=firebase.firestore.FieldValue.serverTimestamp();
-        await hRef.set({ uid: currentUser.uid, updatedAt: now });
-        await uref.set({ handle: raw, handleLC: raw, lastHandleChangeAt: now }, { merge:true });
-        try{ if(prev && prev !== raw){ await db.collection('handles').doc(prev).delete(); } }catch(_){ }
-        try{ await uref.collection('ledger').add({ ts: now, type:'handle_change', amount:0 }); }catch(_){ }
+        // 🔒 ATOMIC TRANSACTION: Ensure old handle is deleted BEFORE new one is set
+        const now = firebase.firestore.FieldValue.serverTimestamp();
+        
+        await db.runTransaction(async (tx) => {
+          // 1️⃣ Delete old handle first (if exists and different)
+          if(prev && prev !== raw) {
+            const oldHandleRef = db.collection('handles').doc(prev.toLowerCase());
+            tx.delete(oldHandleRef);
+            console.log('🗑️ Deleting old handle:', prev);
+          }
+          
+          // 2️⃣ Set new handle mapping
+          tx.set(hRef, { uid: currentUser.uid, updatedAt: now });
+          
+          // 3️⃣ Update user document
+          tx.set(uref, { handle: raw, handleLC: raw, lastHandleChangeAt: now }, { merge:true });
+          
+          console.log('✅ Transaction complete - handle updated to:', raw);
+        });
+        
+        // 4️⃣ Add ledger entry (outside transaction)
+        try{ 
+          await uref.collection('ledger').add({ ts: now, type:'handle_change', amount:0 }); 
+        }catch(_){ }
+        
+        // 🧹 AGGRESSIVE CACHE CLEARING: Clear ALL caches, not just current user
+        console.log('🧹 Clearing ALL handle caches after username change...');
+        if(typeof clearAllHandleCaches === 'function') {
+          clearAllHandleCaches();
+        }
+        
+        // 5️⃣ IMMEDIATE UI UPDATE: Set new handle in cache and display
+        if(typeof uidHandleCache !== 'undefined') {
+          uidHandleCache.set(currentUser.uid, `@${raw}`);
+          if(typeof handleCacheTimestamps !== 'undefined') {
+            handleCacheTimestamps.set(currentUser.uid, Date.now());
+          }
+          console.log('✅ Updated cache with new handle:', raw);
+        }
+        
+        const profileName = document.getElementById('profileName');
+        if(profileName) {
+          profileName.textContent = `@${raw}`;
+          console.log('✅ Immediately updated display to:', raw);
+        }
+        
+        // 🔄 Force refresh all visible pings to show new username
+        try {
+          // Re-render all markers to show updated username
+          if(typeof lastPingCache !== 'undefined' && lastPingCache) {
+            console.log('🔄 Refreshing all ping displays with new username...');
+            lastPingCache.forEach(ping => {
+              if(ping.authorId === currentUser.uid) {
+                // Force re-render this marker
+                if(typeof upsertMarker === 'function') {
+                  upsertMarker(ping);
+                }
+              }
+            });
+          }
+        } catch(_) {}
+        
         // Post-write UI updates should not flip success status
         try{ await refreshAuthUI(currentUser); }catch(_){ }
         try{ await updateHandleCooldownUI(); }catch(_){ }
@@ -5087,6 +6130,16 @@ startRequestsListeners(currentUser.uid);
   // Custom Ping UI setup
   const customPingOptions = document.getElementById('customPingOptions');
   const customPingInput = document.getElementById('customPingInput');
+  if(customPingOptions) {
+    console.log('✅ customPingOptions element found');
+  } else {
+    console.error('❌ customPingOptions element NOT FOUND!');
+  }
+  if(customPingInput) {
+    console.log('✅ customPingInput element found');
+  } else {
+    console.error('❌ customPingInput element NOT FOUND!');
+  }
   // Accessed via openModal/closeModal by id; no local reference needed
   const pingCropImage = document.getElementById('pingCropImage');
   const pingCropZoom = document.getElementById('pingCropZoom');
@@ -5100,7 +6153,12 @@ startRequestsListeners(currentUser.uid);
     pingCropImage.style.transform = `translate(calc(-50% + ${pingCropState.imgX}px), calc(-50% + ${pingCropState.imgY}px)) scale(${s})`;
     // Also render live preview
     try{
-      const canvas = pingPreview; if(!canvas) return; const ctx=canvas.getContext('2d'); if(!ctx) return; if(canvas.width!==120) canvas.width=120; if(canvas.height!==160) canvas.height=160; ctx.clearRect(0,0,canvas.width,canvas.height);
+      const canvas = pingPreview; if(!canvas) return; const ctx=canvas.getContext('2d'); if(!ctx) return; 
+      // 🎯 FIXED: Larger preview for better visibility
+      if(canvas.width!==160) canvas.width=160; 
+      if(canvas.height!==213) canvas.height=213; 
+      ctx.clearRect(0,0,canvas.width,canvas.height);
+      
       // Draw pin path and clip
       ctx.save();
       ctx.scale(canvas.width/100, canvas.height/100);
@@ -5108,22 +6166,38 @@ startRequestsListeners(currentUser.uid);
       ctx.clip(path);
       ctx.setTransform(1,0,0,1,0,0);
       const img=pingCropImage; if(!img || !img.naturalWidth) { ctx.restore(); return; }
-      // Match overlay scale (CSS uses center/70% 70% for the pin mask)
+      
+      // 🔒 FIXED: Match overlay scale (CSS uses center/70% 70% for the pin mask)
       const CLIP_SCALE = 0.70;
-      const effW = canvas.width * CLIP_SCALE;
-      const effH = canvas.height * CLIP_SCALE;
-      // Base contains to visible clip area, then apply user scale and pan
-      const base=Math.min(effW/img.naturalWidth, effH/img.naturalHeight);
-      const drawS = s*base; const drawW=img.naturalWidth*drawS, drawH=img.naturalHeight*drawS;
-      const frameEl=document.getElementById('pingCropFrame'); const offX=(pingCropState.imgX/frameEl.clientWidth)*effW; const offY=(pingCropState.imgY/frameEl.clientHeight)*effH;
-      const dx=canvas.width/2 - drawW/2 + offX; const dy=canvas.height/2 - drawH/2 + offY;
+      const frameEl=document.getElementById('pingCropFrame'); 
+      
+      // Calculate the visible area dimensions (70% of frame)
+      const visibleW = frameEl.clientWidth * CLIP_SCALE;
+      const visibleH = frameEl.clientHeight * CLIP_SCALE;
+      
+      // Calculate how the image is positioned in the frame
+      // The frame is centered, so visible area is also centered
+      const base = Math.min(visibleW / img.naturalWidth, visibleH / img.naturalHeight);
+      const drawS = s * base;
+      const drawW = img.naturalWidth * drawS;
+      const drawH = img.naturalHeight * drawS;
+      
+      // 🎯 CRITICAL FIX: Properly calculate offset relative to visible area
+      // The image pan (imgX, imgY) is in frame coordinates
+      // We need to scale this to canvas coordinates
+      const scaleToCanvas = (canvas.width * CLIP_SCALE) / visibleW;
+      const offX = pingCropState.imgX * scaleToCanvas;
+      const offY = pingCropState.imgY * scaleToCanvas;
+      
+      // Draw centered with offset
+      const dx = canvas.width/2 - drawW/2 + offX;
+      const dy = canvas.height/2 - drawH/2 + offY;
       ctx.drawImage(img, dx, dy, drawW, drawH);
       ctx.restore();
+      
       // Outline
-      ctx.save(); ctx.scale(canvas.width/100, canvas.height/100); ctx.strokeStyle='rgba(0,0,0,.35)'; ctx.lineWidth=1.8; ctx.stroke(path); ctx.restore();
-      // Hint the clip with a subtle shadow so edges are clear
-      ctx.save(); ctx.scale(canvas.width/100, canvas.height/100); ctx.shadowColor='rgba(0,0,0,.08)'; ctx.shadowBlur=6; ctx.stroke(path); ctx.restore();
-    }catch(_){ }
+      ctx.save(); ctx.scale(canvas.width/100, canvas.height/100); ctx.strokeStyle='rgba(0,0,0,.5)'; ctx.lineWidth=2; ctx.stroke(path); ctx.restore();
+    }catch(err){ console.error('Preview render error:', err); }
   }
   function addPingDrag(el){ el.addEventListener('pointerdown', (e)=>{ pingCropState.dragging=true; pingCropState.startX=e.clientX; pingCropState.startY=e.clientY; el.setPointerCapture(e.pointerId); }); el.addEventListener('pointermove', (e)=>{ if(!pingCropState.dragging) return; const dx=e.clientX-pingCropState.startX, dy=e.clientY-pingCropState.startY; pingCropState.imgX+=dx; pingCropState.imgY+=dy; pingCropState.startX=e.clientX; pingCropState.startY=e.clientY; renderPingCropTransform(); }); el.addEventListener('pointerup', ()=>{ pingCropState.dragging=false; }); el.addEventListener('pointercancel', ()=>{ pingCropState.dragging=false; }); }
   if(pingCropImage){ addPingDrag(pingCropImage); }
@@ -5131,11 +6205,23 @@ startRequestsListeners(currentUser.uid);
   if(closePingCrop){ closePingCrop.onclick = ()=> closeModal('pingCropModal'); }
   const TIERS=[{tier:0,label:'Default',price:0},{tier:100,label:'Purple',price:100},{tier:200,label:'Alien',price:200},{tier:300,label:'Galactic',price:300},{tier:500,label:'Nuke',price:500},{tier:1000,label:'Custom Image (sub only)',price:1000}];
   async function renderCustomPingUI(){
+    console.log('🎨 renderCustomPingUI called');
     try{
-      if(!customPingOptions || !currentUser) return;
+      const customPingOptionsEl = document.getElementById('customPingOptions');
+      if(!customPingOptionsEl) {
+        console.error('❌ customPingOptions element not found! DOM not ready or element missing from HTML');
+        return;
+      }
+      if(!currentUser) {
+        console.warn('⚠️ No current user, skipping custom ping UI');
+        customPingOptionsEl.innerHTML = '<div class="muted">Sign in to customize your ping markers.</div>';
+        return;
+      }
+      console.log('✅ Rendering custom ping UI for user:', currentUser.uid);
       const snap=await usersRef.doc(currentUser.uid).get(); const u=snap.exists? snap.data():{};
       const owned=u.ownedPings||{}; const sel=Number(u.selectedPingTier||0);
-      customPingOptions.innerHTML=''; customPingOptions.classList.add('ping-grid');
+      console.log('📦 User ping data:', { owned, selected: sel });
+      customPingOptionsEl.innerHTML=''; customPingOptionsEl.classList.add('ping-grid');
       TIERS.forEach(t=>{
         const row=document.createElement('div'); row.className='ping-card';
         let ownedFlag = !!owned[t.tier] || t.tier===0;
@@ -5198,24 +6284,7 @@ startRequestsListeners(currentUser.uid);
   }
   if(cropImage){ addDrag(cropImage); }
 
-  // Initialize custom ping UI when opening settings
-  document.addEventListener('click', (e)=>{
-    if(e.target && e.target.id==='openSettings'){
-      if (profileSystemReady) {
-        switchToSettings();
-      } else {
-        console.warn('Profile system not ready for settings');
-      }
-    }
-    if(e.target && e.target.id==='backToProfile'){
-      if (profileSystemReady) {
-        switchToOwnProfile();
-      } else {
-        console.warn('Profile system not ready for back button');
-      }
-    }
-    if(e.target && e.target.id==='openStore'){ try{ openModal('storeModal'); renderStore(); }catch(_){ } }
-  });
+  // ⚠️ REMOVED: Duplicate event listener (already handled in main profile click delegation above)
 
   // Store: PPs bundles + subscription
   const ppBundles = [
@@ -5511,22 +6580,37 @@ startRequestsListeners(currentUser.uid);
 
 
   let friendsRenderToken = 0;
+  let friendsListUnsub = null; // 🔥 REAL-TIME: Listener for friend list changes
+  
   async function refreshFriends(){
+    console.log('👥 refreshFriends called, currentUser:', currentUser?.uid);
     const friendList = document.getElementById('profileFriendsList');
     const myCodeEl = document.getElementById('myCodeEl');
-    if(!friendList){ return; }
+    if(!friendList){ 
+      console.log('❌ profileFriendsList element not found');
+      return; 
+    }
     // Clean up any legacy inline Gift PPs UI accidentally added inside the Friends section
     try{
       const parent = friendList.parentElement;
       if(parent){ parent.querySelectorAll('#giftTarget, #giftAmount, #giftBtn').forEach(el=>{ const sec=el.closest('.section'); if(sec && sec!==parent) sec.remove(); }); }
     }catch(_){ }
-    if(!currentUser){ friendList.innerHTML='<div class="muted">Sign in to manage friends.</div>'; return; }
-    const doc=await usersRef.doc(currentUser.uid).get(); const data=doc.exists? doc.data():{friendIds:[]};
+    if(!currentUser){ 
+      friendList.innerHTML='<div class="muted">Sign in to manage friends.</div>'; 
+      myFriends = new Set();
+      console.log('⚠️ No currentUser, clearing friends');
+      return; 
+    }
+    const doc=await usersRef.doc(currentUser.uid).get(); 
+    const data=doc.exists? doc.data():{friendIds:[]};
+    console.log('📦 Friend data from Firestore:', data.friendIds);
     // Dedup and normalize friend list
     const originalIds = (data.friendIds||[]).filter(Boolean);
     const uniqueIds = Array.from(new Set(originalIds));
     if(uniqueIds.length !== originalIds.length){ try{ await usersRef.doc(currentUser.uid).set({ friendIds: uniqueIds }, { merge:true }); }catch(_){ } }
-    myFriends=new Set(uniqueIds); if(myCodeEl) myCodeEl.value=currentUser.uid;
+    myFriends=new Set(uniqueIds); 
+    console.log('✅ myFriends updated:', myFriends.size, 'friends');
+    if(myCodeEl) myCodeEl.value=currentUser.uid;
     const token = ++friendsRenderToken;
     friendList.innerHTML='';
     if(!uniqueIds.length){ friendList.innerHTML='<div class="muted">No friends yet. Share your code above.</div>'; reFilterMarkers(); return; }
@@ -5574,35 +6658,146 @@ startRequestsListeners(currentUser.uid);
     friendList.innerHTML=''; friendList.appendChild(frag);
     reFilterMarkers();
   }
+  
+  // 🔥 REAL-TIME FEATURE: Auto-refresh friends list when it changes
+  function startFriendsListener(uid) {
+    if(friendsListUnsub) friendsListUnsub(); // Clean up old listener
+    
+    friendsListUnsub = usersRef.doc(uid).onSnapshot(doc => {
+      if(!doc.exists) return;
+      const data = doc.data();
+      const newFriendIds = new Set(data.friendIds || []);
+      
+      // Only refresh if friend list actually changed
+      const currentFriendIds = myFriends;
+      if(newFriendIds.size !== currentFriendIds.size || 
+         ![...newFriendIds].every(id => currentFriendIds.has(id))) {
+        console.log('🔥 Friend list changed - auto-refreshing');
+        refreshFriends();
+      }
+    });
+  }
+  
   // Expose for tooling to satisfy aggressive linters
   try{ window.refreshFriends = refreshFriends; }catch(_){ }
 
   /* --------- Notifications --------- */
   const notifBadge=$('#notifBadge'), notifsContent=$('#notifsContent');
   $('#closeNotifs').onclick=()=>closeModal('notifsModal');
-  // Use event delegation for notification button
-  document.addEventListener('click', async (e) => {
-    if(e.target.id === 'bellBtn' || e.target.closest('#bellBtn')){
-      e.stopPropagation(); // Prevent map click handler from firing
+  
+  // 🔔 FIXED: Direct click handler on bell button (more reliable than delegation)
+  const bellBtn = document.getElementById('bellBtn');
+  if(bellBtn){
+    console.log('✅ Bell button found');
+    bellBtn.addEventListener('click', async (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      console.log('🔔 Bell button clicked!');
     if(!currentUser) return showToast('Sign in to view notifications');
     openModal('notifsModal');
     await usersRef.doc(currentUser.uid).set({ unreadCount: 0 }, { merge:true });
     notifBadge.style.display='none';
-    }
   });
+  } else {
+    console.error('❌ Bell button NOT FOUND!');
+  }
   let notifUnsub=null;
+  let unreadCountUnsub=null; // 🔔 Track unread count listener
+  
+  // 🔔 NEW: Listen to user's unreadCount and update badge
+  function startUnreadCountListener(uid) {
+    if(unreadCountUnsub) unreadCountUnsub();
+    unreadCountUnsub = usersRef.doc(uid).onSnapshot(doc => {
+      if(!doc.exists) return;
+      const data = doc.data();
+      const count = data.unreadCount || 0;
+      
+      if(count > 0) {
+        notifBadge.textContent = count;
+        notifBadge.style.display = 'inline';
+        console.log('🔔 Unread notifications:', count);
+      } else {
+        notifBadge.style.display = 'none';
+        console.log('🔔 No unread notifications');
+      }
+    }, err => {
+      console.error('Error listening to unread count:', err);
+    });
+  }
+  
   function startNotifListener(uid){
     if(notifUnsub) notifUnsub();
-    notifUnsub = usersRef.doc(uid).collection('notifications').orderBy('createdAt','desc').limit(50).onSnapshot(s=>{
+    // 🔔 Also start listening to unread count
+    startUnreadCountListener(uid);
+    
+    notifUnsub = usersRef.doc(uid).collection('notifications').orderBy('createdAt','desc').limit(50).onSnapshot(async s=>{
       if(s.empty){ notifsContent.textContent='No notifications yet.'; return; }
-      notifsContent.innerHTML='';
+      
+      // CLIENT-SIDE DEDUPLICATION & RECENCY FILTER
+      const now = Date.now();
+      const SEVEN_DAYS = 7 * 24 * 60 * 60 * 1000;
+      const seen = new Map(); // key = type+context, value = newest notification
+      
       s.forEach(doc=>{
-        const n=doc.data();
+        const n = doc.data();
+        const createdAt = n.createdAt?.toDate ? n.createdAt.toDate().getTime() : 0;
+        
+        // Skip notifications older than 7 days
+        if(now - createdAt > SEVEN_DAYS) return;
+        
+        // Create dedup key based on notification type and context
+        let dedupKey;
+        if(n.type === 'potw_awarded') {
+          dedupKey = `potw_${n.data?.pingId || 'unknown'}`;
+        } else if(n.type === 'mention' || n.type === 'mention_comment') {
+          dedupKey = `mention_${n.data?.pingId || 'unknown'}_${n.from || 'unknown'}`;
+        } else if(n.type === 'like_milestone') {
+          dedupKey = `milestone_${n.data?.pingId || 'unknown'}_${n.data?.milestone || 0}`;
+        } else if(n.type === 'friend_comment') {
+          dedupKey = `comment_${n.data?.pingId || 'unknown'}_${n.from || 'unknown'}`;
+        } else if(n.type === 'friend_req') {
+          dedupKey = `freq_${n.from || 'unknown'}`;
+        } else if(n.type === 'friend_accept') {
+          dedupKey = `facc_${n.partner || 'unknown'}`;
+        } else {
+          dedupKey = `${n.type}_${doc.id}`;
+        }
+        
+        // Keep only the newest notification for each dedupKey
+        if(!seen.has(dedupKey) || createdAt > (seen.get(dedupKey).createdAt || 0)) {
+          seen.set(dedupKey, { ...n, id: doc.id, createdAt });
+        }
+      });
+      
+      // Convert map to array and sort by recency
+      const uniqueNotifs = Array.from(seen.values()).sort((a, b) => b.createdAt - a.createdAt);
+      
+      if(uniqueNotifs.length === 0) {
+        notifsContent.textContent='No recent notifications.';
+        return;
+      }
+      
+      // 🚀 OPTIMIZATION: Pre-fetch all unique UIDs to avoid redundant Firestore reads
+      const uniqueUidsInNotifs = new Set();
+      uniqueNotifs.forEach(n => {
+        if(n.from) uniqueUidsInNotifs.add(n.from);
+        if(n.partner) uniqueUidsInNotifs.add(n.partner);
+      });
+      
+      // Batch fetch all handles in parallel
+      const handleFetchPromises = Array.from(uniqueUidsInNotifs).map(uid => 
+        getHandleForUid(uid).catch(() => '@unknown')
+      );
+      await Promise.all(handleFetchPromises);
+      // Now all handles are cached in uidHandleCache
+      
+      notifsContent.innerHTML='';
+      uniqueNotifs.forEach(n=>{
           const line=document.createElement('div');
           if(n.type==='friend_req'){ 
             line.className='notif req';
             const from = n.from;
-          const notifId = doc.id;
+          const notifId = n.id;
           line.innerHTML = '<div class="notif-row"><div>Friend request</div><div class="notif-actions"><button class="btn" id="acc_'+notifId+'">✓</button><button class="btn" id="dec_'+notifId+'">✕</button></div></div>';
           notifsContent.appendChild(line);
           
@@ -5647,6 +6842,119 @@ startRequestsListeners(currentUser.uid);
           notifsContent.appendChild(line);
           } else if(n.type==='friend_removed'){
             line.textContent = 'You were removed as a friend.';
+          notifsContent.appendChild(line);
+          } else if(n.type==='mention'){
+            // Mention notification - clickable to view ping
+            line.className='notif';
+            line.style.cursor='pointer';
+            const pingText = n.data?.pingText || '';
+            const truncated = pingText.length > 50 ? pingText.slice(0,50)+'...' : pingText;
+            line.innerHTML = `<div><strong>@...</strong> mentioned you: "${truncated}"</div>`;
+            
+            // Fetch and display the real username
+            (async ()=>{
+              try{
+                const handle = await getHandleForUid(n.from);
+                const handleSpan = document.createElement('strong');
+                handleSpan.textContent = handle;
+                handleSpan.style.color = '#1d4ed8';
+                line.innerHTML = '';
+                line.appendChild(handleSpan);
+                line.appendChild(document.createTextNode(` mentioned you: "${truncated}"`));
+              }catch(err){
+                console.error('Error fetching mention handle:', err);
+              }
+            })();
+            
+            line.onclick = ()=>{
+              if(n.data?.pingId){
+                closeModal('notifsModal');
+                openSheet(n.data.pingId);
+                const ping = lastPingCache.get(n.data.pingId);
+                if(ping) map.flyTo([ping.lat, ping.lon], 17, { duration: 0.6 });
+              }
+            };
+          notifsContent.appendChild(line);
+          } else if(n.type==='mention_comment'){
+            // Mention in comment notification
+            line.className='notif';
+            line.style.cursor='pointer';
+            const commentText = n.data?.commentText || '';
+            const truncated = commentText.length > 50 ? commentText.slice(0,50)+'...' : commentText;
+            line.innerHTML = `<div><strong>@...</strong> mentioned you in a comment: "${truncated}"</div>`;
+            
+            // Fetch and display the real username
+            (async ()=>{
+              try{
+                const handle = await getHandleForUid(n.from);
+                const handleSpan = document.createElement('strong');
+                handleSpan.textContent = handle;
+                handleSpan.style.color = '#1d4ed8';
+                line.innerHTML = '';
+                line.appendChild(handleSpan);
+                line.appendChild(document.createTextNode(` mentioned you in a comment: "${truncated}"`));
+              }catch(err){
+                console.error('Error fetching mention handle:', err);
+              }
+            })();
+            
+            line.onclick = ()=>{
+              if(n.data?.pingId){
+                closeModal('notifsModal');
+                openSheet(n.data.pingId);
+                const ping = lastPingCache.get(n.data.pingId);
+                if(ping) map.flyTo([ping.lat, ping.lon], 17, { duration: 0.6 });
+              }
+            };
+          notifsContent.appendChild(line);
+          } else if(n.type==='like_milestone'){
+            // Like milestone notification
+            line.className='notif';
+            line.style.cursor='pointer';
+            const milestone = n.data?.milestone || 0;
+            const pingText = n.data?.pingText || 'Your ping';
+            const truncated = pingText.length > 40 ? pingText.slice(0,40)+'...' : pingText;
+            line.innerHTML = `<div>🎉 Your ping reached ${milestone} likes! "${truncated}"</div>`;
+            line.onclick = ()=>{
+              if(n.data?.pingId){
+                closeModal('notifsModal');
+                openSheet(n.data.pingId);
+                const ping = lastPingCache.get(n.data.pingId);
+                if(ping) map.flyTo([ping.lat, ping.lon], 17, { duration: 0.6 });
+              }
+            };
+          notifsContent.appendChild(line);
+          } else if(n.type==='friend_comment'){
+            // Friend commented notification
+            line.className='notif';
+            line.style.cursor='pointer';
+            const commentText = n.data?.commentText || '';
+            const truncated = commentText.length > 50 ? commentText.slice(0,50)+'...' : commentText;
+            line.innerHTML = `<div><strong>@...</strong> commented: "${truncated}"</div>`;
+            
+            // Fetch and display the real username
+            (async ()=>{
+              try{
+                const handle = await getHandleForUid(n.from);
+                const handleSpan = document.createElement('strong');
+                handleSpan.textContent = handle;
+                handleSpan.style.color = '#1d4ed8';
+                line.innerHTML = '';
+                line.appendChild(handleSpan);
+                line.appendChild(document.createTextNode(` commented: "${truncated}"`));
+              }catch(err){
+                console.error('Error fetching commenter handle:', err);
+              }
+            })();
+            
+            line.onclick = ()=>{
+              if(n.data?.pingId){
+                closeModal('notifsModal');
+                openSheet(n.data.pingId);
+                const ping = lastPingCache.get(n.data.pingId);
+                if(ping) map.flyTo([ping.lat, ping.lon], 17, { duration: 0.6 });
+              }
+            };
           notifsContent.appendChild(line);
         }
       });
@@ -5884,15 +7192,36 @@ startRequestsListeners(currentUser.uid);
 
   /* --------- Auth state --------- */
   auth.onAuthStateChanged(async (u)=>{
-    try{ await refreshAuthUI(u); }catch(e){ console.error('onAuthStateChanged', e); }
+    try{ 
+      // 🔒 CRITICAL: Ensure handle exists BEFORE refreshing UI
+      if(u && !u.isAnonymous) {
+        console.log('🔧 Auth state changed - ensuring identity mappings first');
+        await ensureIdentityMappings(u);
+      }
+      await refreshAuthUI(u); 
+    }catch(e){ console.error('onAuthStateChanged', e); }
     // Refresh live markers when auth changes to prevent stale filter states
     try{ reFilterMarkers(); }catch(_){ }
   });
   auth.onIdTokenChanged(async (u)=>{
-    try{ await refreshAuthUI(u); }catch(e){ console.error('onIdTokenChanged', e); }
+    try{ 
+      // 🔒 CRITICAL: Ensure handle exists BEFORE refreshing UI
+      if(u && !u.isAnonymous) {
+        await ensureIdentityMappings(u);
+      }
+      await refreshAuthUI(u); 
+    }catch(e){ console.error('onIdTokenChanged', e); }
   });
   // Initial paint if already signed in from a previous session
-  try{ if(auth.currentUser){ await refreshAuthUI(auth.currentUser); } }catch(e){ }
+  try{ 
+    if(auth.currentUser && !auth.currentUser.isAnonymous) {
+      console.log('🔧 Initial paint - ensuring identity mappings first');
+      await ensureIdentityMappings(auth.currentUser);
+    }
+    if(auth.currentUser) {
+      await refreshAuthUI(auth.currentUser);
+    }
+  }catch(e){ console.error('Initial auth paint error:', e); }
 
   // Ultra-robust UI sync loop: ensure UI reflects auth state even if events are missed
   (function startAuthUISync(){
