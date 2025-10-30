@@ -5065,6 +5065,7 @@ startRequestsListeners(currentUser.uid);
     if(removeVideoBtn){ removeVideoBtn.onclick = clearAll; }
   }catch(_){ }
 
+  const ENABLE_FRIEND_REACTIONS = false; // disable to avoid extra reads/permissions
   async function renderVoteBar(p){
     reactBar.innerHTML='';
     const disabled = (!currentUser || currentUser.isAnonymous);
@@ -5078,8 +5079,8 @@ startRequestsListeners(currentUser.uid);
     reactBar.appendChild(mk('like','👍',p.likes)); 
     reactBar.appendChild(mk('dislike','👎',p.dislikes));
     
-    // Show which friends reacted (only if signed in and have friends)
-    if(currentUser && !currentUser.isAnonymous && myFriends && myFriends.size > 0){
+    // Show which friends reacted (optional)
+    if(ENABLE_FRIEND_REACTIONS && currentUser && !currentUser.isAnonymous && myFriends && myFriends.size > 0){
       try{
         // Query votes for this ping
         const votesSnapshot = await votesRef.where('pingId', '==', p.id).get();
