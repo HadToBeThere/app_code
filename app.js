@@ -4164,14 +4164,7 @@ startRequestsListeners(currentUser.uid);
     
     const testUid = prompt('Enter a UID to send test notification to:');
     if (testUid) {
-      console.log(`📧 Sending test notification to ${testUid}`);
-      
-      await sendNotification(testUid, 'test', {
-        message: 'This is a test notification',
-        timestamp: new Date().toISOString()
-      });
-      
-      console.log('✅ Test notification sent!');
+      console.log(`📧 Notification test disabled on client (handled server-side)`);
     }
   };
 
@@ -4301,15 +4294,7 @@ startRequestsListeners(currentUser.uid);
     if (resolvedMentions.length === 0) {
       console.log('📧 No notifications to send');
     } else {
-      for (const mention of resolvedMentions) {
-        console.log(`📧 Sending notification to @${mention.handle} (${mention.uid})`);
-        await sendNotification(mention.uid, 'mention', {
-          pingId: mockPingId,
-          pingText: testText,
-          mentionHandle: mention.handle
-        });
-      }
-      console.log(`📧 Sent ${resolvedMentions.length} notifications`);
+      console.log('📧 Mention notifications disabled on client (handled server-side)');
     }
     
     console.log('\n✅ Workflow simulation complete!');
@@ -5212,82 +5197,12 @@ startRequestsListeners(currentUser.uid);
       // Note: Comment will appear via real-time listener
       // No need to manually update UI
       
-      // SEND FRIEND COMMENT NOTIFICATION TO PING AUTHOR
-      try{
-        const pingDoc = await pingsRef.doc(openId).get();
-        if(pingDoc.exists){
-          const pingData = pingDoc.data();
-          const pingAuthorId = pingData.authorId;
-          
-          // Don't notify yourself
-          if(pingAuthorId && pingAuthorId !== currentUser.uid){
-            // Check if commenter is a friend of ping author using helper
-            const authorFriends = await getFriendsList(pingAuthorId);
-            if(authorFriends.has(currentUser.uid)){
-              console.log(`📧 Sending friend comment notification to ping author ${pingAuthorId}`);
-              await sendNotification(pingAuthorId, 'friend_comment', {
-                pingId: openId,
-                commentText: t,
-                commenterId: currentUser.uid
-              });
-            } else {
-              console.log(`📧 Not sending comment notification - commenter is not a friend of author`);
-            }
-          }
-        }
-      }catch(err){
-        console.error('Error sending friend comment notification:', err);
-      }
+      // Notifications handled server-side; client-side disabled to avoid permission errors
       
-      // SEND NOTIFICATIONS FOR MENTIONS IN COMMENTS - WITH VISIBILITY CHECK!
-      console.log('📧 Sending notifications for comment mentions...');
-      if (resolvedMentions.length === 0) {
-        console.log('📧 No mentions to notify about in comment');
-      } else {
-        // 👥 Expand @friends to individual friends for notifications
-        const notificationTargets = await expandMentionsForNotifications(resolvedMentions);
-        console.log(`📧 Expanded to ${notificationTargets.length} notification targets for comments`);
-        
-        // Check ping visibility and author's friends
-        let allowedUids = new Set();
-        try{
-          const pingDoc = await pingsRef.doc(openId).get();
-          if(pingDoc.exists){
-            const pingData = pingDoc.data();
-            if(pingData.visibility === 'private' && pingData.authorId){
-              // Get ping author's friend list using helper
-              allowedUids = await getFriendsList(pingData.authorId);
-              console.log(`📧 Private ping - only notifying ${allowedUids.size} friends for comment mentions`);
-            }
-          }
-        }catch(err){
-          console.error('Error checking ping visibility for comment mentions:', err);
-        }
-        
-        for (const mention of notificationTargets) {
-          // Skip if private ping and mentioned user is not a friend of ping author
-          if(allowedUids.size > 0 && !allowedUids.has(mention.uid)){
-            console.log(`📧 Skipping comment mention @${mention.handle} - not a friend (private ping)`);
-            continue;
-          }
-          
-          console.log(`📧 Sending comment notification for mention: @${mention.handle} (${mention.uid})`);
-          await sendNotification(mention.uid, 'mention_comment', {
-            pingId: openId,
-            commentText: t,
-            mentionHandle: mention.handle
-          });
-        }
-        console.log(`📧 Sent comment mention notifications`);
-      }
+      // Mention notifications handled server-side
     }catch(err){
       console.error('Error posting comment:', err);
-      // Fallback: save comment without mentions
-      await pingsRef.doc(openId).collection('comments').doc(currentUser.uid).set({ 
-        text:t, 
-        authorId:currentUser.uid, 
-        createdAt:firebase.firestore.FieldValue.serverTimestamp()
-      });
+      showToast('Could not post comment');
     }
     commentInput.value='';
     try{ commentsEl.scrollTo({ top: 0, behavior: 'smooth' }); }catch(_){ }
