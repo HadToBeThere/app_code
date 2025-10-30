@@ -10,8 +10,9 @@ function getFunctions() {
   if (!functions) {
     console.log('🔧 Initializing Firebase Functions...');
     try {
-      functions = firebase.functions();
-      console.log('✅ Firebase Functions initialized successfully');
+      // Initialize with explicit region
+      functions = firebase.app().functions('us-central1');
+      console.log('✅ Firebase Functions initialized successfully (us-central1)');
       // For local development, uncomment this line:
       // functions.useFunctionsEmulator('http://localhost:5001');
     } catch (error) {
