@@ -1,0 +1,251 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // ============================================
+    // HELPER FUNCTIONS
+    // ============================================
+    
+    // Check if user is authenticated and not anonymous
+    function isSignedIn() {
+      return request.auth != null && 
+             request.auth.token.firebase.sign_in_provider != 'anonymous';
+    }
+    
+    // Check if user owns the resource
+    function isOwner(uid) {
+      return isSignedIn() && request.auth.uid == uid;
+    }
+    
+    // Check if two users are friends
+    function isFriend(userId, friendId) {
+      return exists(/databases/$(database)/documents/users/$(userId)/friends/$(friendId));
+    }
+    
+    // Check if requester is friends with resource owner
+    function isFriendWithOwner(ownerUid) {
+      return isSignedIn() && isFriend(request.auth.uid, ownerUid);
+    }
+    
+    // Check if user is subscriber
+    function isSubscriber() {
+      return isSignedIn() && 
+             get(/databases/$(database)/documents/users/$(request.auth.uid))
+             .data.subscriptionStatus == 'active';
+    }
+    
+    // Validate text doesn't contain real names (basic pattern)
+    function hasNoRealNames(text) {
+      // This is a basic check - real validation should be server-side
+      return text.size() > 0 && text.size() <= 140;
+    }
+    
+    // ============================================
+    // USERS COLLECTION
+    // ============================================
+    match /users/{userId} {
+      // Anyone authenticated can read user profiles
+      allow read: if isSignedIn();
+      
+      // Users can only create their own document
+      allow create: if isOwner(userId) && 
+                      request.resource.data.keys().hasAll(['email', 'createdAt']) &&
+                      request.resource.data.email == request.auth.token.email &&
+                      request.resource.data.uid == request.auth.uid;
+      
+      // Users can only update their own profile
+      // Prevent modification of critical fields
+      allow update: if isOwner(userId) &&
+                      !request.resource.data.diff(resource.data)
+                        .affectedKeys()
+                        .hasAny(['uid', 'email', 'createdAt']) &&
+                      // Prevent PP manipulation
+                      (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['pp']) ||
+                       request.resource.data.pp <= resource.data.pp);
+      
+      // Never allow client-side deletion
+      allow delete: if false;
+      
+      // Friends subcollection
+      match /friends/{friendId} {
+        allow read: if isOwner(userId);
+        allow write: if isOwner(userId);
+      }
+      
+      // Quota subcollection (rate limiting data)
+      match /quota/{date} {
+        allow read: if isOwner(userId);
+        allow write: if false; // Only Cloud Functions can write quota
+      }
+      
+      // Ledger subcollection (PP transaction history)
+      match /ledger/{ledgerId} {
+        allow read: if isOwner(userId);
+        allow write: if false; // Only Cloud Functions
+      }
+    }
+    
+    // ============================================
+    // PINGS COLLECTION
+    // ============================================
+    match /pings/{pingId} {
+      // Read rules: respect visibility settings
+      allow read: if isSignedIn() &&
+                    (resource.data.visibility == 'public' ||
+                     (resource.data.visibility == 'private' && 
+                      (isOwner(resource.data.uid) || 
+                       isFriendWithOwner(resource.data.uid))));
+      
+      // Create: DISABLED - Must use Cloud Function
+      // This prevents quota bypassing and ensures server-side validation
+      allow create: if false;
+      
+      // Update: Only allow reaction updates from Cloud Functions
+      // All other updates disabled
+      allow update: if false;
+      
+      // Delete: Users can delete their own pings
+      allow delete: if isOwner(resource.data.uid);
+      
+      // Comments subcollection
+      match /comments/{commentId} {
+        // Read if parent ping is readable
+        allow read: if isSignedIn();
+        
+        // Create: DISABLED - Use Cloud Function for spam prevention
+        allow create: if false;
+        
+        // Delete: Own comments only
+        allow delete: if isSignedIn() && resource.data.uid == request.auth.uid;
+        
+        allow update: if false;
+      }
+    }
+    
+    // ============================================
+    // HANDLES COLLECTION (Username -> UID mapping)
+    // ============================================
+    match /handles/{handle} {
+      // Anyone can read handles (for lookup)
+      allow read: if true;
+      
+      // Write: DISABLED - Must use Cloud Function for atomic operations
+      // This prevents race conditions and duplicate handles
+      allow write: if false;
+    }
+    
+    // ============================================
+    // FRIEND REQUESTS COLLECTION
+    // ============================================
+    match /friendRequests/{requestId} {
+      // Read: sender or recipient only
+      allow read: if isSignedIn() && 
+                    (resource.data.from == request.auth.uid || 
+                     resource.data.to == request.auth.uid);
+      
+      // Create: authenticated users only, must be the sender
+      allow create: if isSignedIn() && 
+                      request.resource.data.from == request.auth.uid &&
+                      request.resource.data.to != request.auth.uid && // Can't friend yourself
+                      request.resource.data.keys().hasAll(['from', 'to', 'createdAt']);
+      
+      // Update/Delete: DISABLED - Use Cloud Function
+      allow update: if false;
+      allow delete: if false;
+    }
+    
+    // ============================================
+    // REPORTS COLLECTION
+    // ============================================
+    match /reports/{reportId} {
+      // Create: Authenticated users can report content
+      allow create: if isSignedIn() &&
+                      request.resource.data.reportedBy == request.auth.uid &&
+                      request.resource.data.keys().hasAll([
+                        'reportedBy', 'pingId', 'reason', 'createdAt'
+                      ]);
+      
+      // No one can read/update/delete (admin only via Admin SDK)
+      allow read, update, delete: if false;
+    }
+    
+    // ============================================
+    // NOTIFICATIONS COLLECTION
+    // ============================================
+    match /notifications/{notifId} {
+      // Read: recipient only
+      allow read: if isSignedIn() && resource.data.toUid == request.auth.uid;
+      
+      // Update: recipient can mark as read
+      allow update: if isSignedIn() && 
+                      resource.data.toUid == request.auth.uid &&
+                      request.resource.data.diff(resource.data).affectedKeys().hasOnly(['read']);
+      
+      // Create/Delete: Only Cloud Functions
+      allow create, delete: if false;
+    }
+    
+    // ============================================
+    // PING OF THE WEEK COLLECTION
+    // ============================================
+    match /potw/{weekId} {
+      // Anyone can read the current ping of the week
+      allow read: if isSignedIn();
+      
+      // Only Cloud Functions can write
+      allow write: if false;
+    }
+    
+    // ============================================
+    // HALL OF FAME COLLECTION
+    // ============================================
+    match /hallOfFame/{weekId} {
+      // Anyone can read historical winners
+      allow read: if isSignedIn();
+      
+      // Only Cloud Functions can write
+      allow write: if false;
+    }
+    
+    // ============================================
+    // CUSTOM PING IMAGES (Subscriber feature)
+    // ============================================
+    match /customPingImages/{userId} {
+      allow read: if isSignedIn();
+      allow write: if false; // Managed via Cloud Functions
+    }
+    
+    // ============================================
+    // SUBSCRIPTIONS COLLECTION (Stripe data)
+    // ============================================
+    match /customers/{userId} {
+      allow read: if isOwner(userId);
+      allow write: if false; // Managed by Stripe extension
+      
+      match /subscriptions/{subscriptionId} {
+        allow read: if isOwner(userId);
+        allow write: if false;
+      }
+      
+      match /payments/{paymentId} {
+        allow read: if isOwner(userId);
+        allow write: if false;
+      }
+    }
+    
+    // ============================================
+    // ADMIN COLLECTION (For moderation, analytics)
+    // ============================================
+    match /admin/{document=**} {
+      allow read, write: if false; // Admin SDK only
+    }
+    
+    // ============================================
+    // DEFAULT DENY ALL
+    // ============================================
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
+

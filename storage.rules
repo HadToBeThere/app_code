@@ -1,0 +1,109 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    
+    // ============================================
+    // HELPER FUNCTIONS
+    // ============================================
+    
+    function isSignedIn() {
+      return request.auth != null && 
+             request.auth.token.firebase.sign_in_provider != 'anonymous';
+    }
+    
+    function isOwner(uid) {
+      return isSignedIn() && request.auth.uid == uid;
+    }
+    
+    function isImage() {
+      return request.resource.contentType.matches('image/.*');
+    }
+    
+    function isVideo() {
+      return request.resource.contentType.matches('video/.*');
+    }
+    
+    function isValidImageSize() {
+      return request.resource.size < 5 * 1024 * 1024; // 5MB
+    }
+    
+    function isValidVideoSize() {
+      return request.resource.size < 50 * 1024 * 1024; // 50MB
+    }
+    
+    // ============================================
+    // PROFILE AVATARS
+    // ============================================
+    match /avatars/{userId}/{fileName} {
+      // Public read for all avatars
+      allow read: if true;
+      
+      // Users can only upload their own avatar
+      allow write: if isOwner(userId) &&
+                     isImage() &&
+                     isValidImageSize();
+      
+      // Users can delete their own avatar
+      allow delete: if isOwner(userId);
+    }
+    
+    // ============================================
+    // PING MEDIA (Images and Videos)
+    // ============================================
+    match /pings/{pingId}/{fileName} {
+      // Authenticated users can read ping media
+      allow read: if isSignedIn();
+      
+      // Users can upload media for pings
+      // Validation: must be image or video, size limits
+      allow write: if isSignedIn() &&
+                     ((isImage() && isValidImageSize()) ||
+                      (isVideo() && isValidVideoSize()));
+      
+      // Deletion handled by Cloud Functions only
+      // This prevents orphaned storage references
+      allow delete: if false;
+    }
+    
+    // ============================================
+    // CUSTOM PING IMAGES (Subscriber feature)
+    // ============================================
+    match /custom-pings/{userId}/{fileName} {
+      // Authenticated users can view custom ping images
+      allow read: if isSignedIn();
+      
+      // Only the owner can upload custom ping images
+      // Note: Subscription check is done in Cloud Function
+      allow write: if isOwner(userId) &&
+                     isImage() &&
+                     request.resource.size < 2 * 1024 * 1024; // 2MB for custom pins
+      
+      // Users can delete their own custom images
+      allow delete: if isOwner(userId);
+    }
+    
+    // ============================================
+    // TEMPORARY UPLOADS (For processing)
+    // ============================================
+    match /temp/{userId}/{fileName} {
+      // Users can upload to their temp folder
+      allow write: if isOwner(userId) &&
+                     ((isImage() && isValidImageSize()) ||
+                      (isVideo() && isValidVideoSize()));
+      
+      // Users can read their own temp files
+      allow read: if isOwner(userId);
+      
+      // Users can delete their own temp files
+      allow delete: if isOwner(userId);
+    }
+    
+    // ============================================
+    // DEFAULT DENY ALL
+    // ============================================
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}
+

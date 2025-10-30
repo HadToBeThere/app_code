@@ -4717,75 +4717,54 @@ startRequestsListeners(currentUser.uid);
       }
 
       const visibility = (pingVisibility && pingVisibility.value==='private') ? 'private' : 'public';
-      // SIMPLE MENTION HANDLING - NO MORE BUGS!
-      console.log('🎯 Starting mention processing for ping...');
-      console.log('🎯 Ping text:', text);
-      console.log('🎯 Current user:', currentUser?.uid);
       
-      const mentions = parseMentions(text);
-      const resolvedMentions = await resolveMentions(mentions);
-      console.log('📝 Final resolved mentions for ping:', resolvedMentions);
-
-      const ref = await pingsRef.add({
-        text, lat, lon,
-        createdAt: firebase.firestore.FieldValue.serverTimestamp(),
-        authorId: currentUser.uid,
-        authorIsSubscriber: false,
-        likes:0, dislikes:0, flags:0, status:'live',
+      // 🔒 SECURITY: Use Cloud Function for secure ping creation with server-side validation
+      console.log('🔒 Creating ping via secure Cloud Function...');
+      
+      const result = await createPingSecure({
+        text,
+        lat,
+        lon,
         visibility,
         imageUrl: imageUrl || null,
-        firstNetAt: {}, // milestones map (N -> timestamp) starts empty
-        mentions: resolvedMentions,
         videoUrl: videoUrl || null
       });
-      try{ await usersRef.doc(currentUser.uid).collection('ledger').add({ ts: firebase.firestore.FieldValue.serverTimestamp(), type:'award', amount:0, reason:'post' }); }catch(_){ }
-      // Award ping PPs and possibly streak bonus (first ping of day)
-      try{
-        await awardPoints(currentUser.uid, 5, 'ping');
-        await awardOnFirstPingOfDay(currentUser.uid);
-      }catch(_){ }
-      await usersRef.doc(currentUser.uid).set({ lastPingAt: firebase.firestore.FieldValue.serverTimestamp() }, { merge:true });
-
-      const temp = { id:ref.id, text, lat, lon, createdAt:{toDate:()=>new Date()}, authorId:currentUser.uid, authorIsSubscriber:false, likes:0, dislikes:0, flags:0, status:'live', visibility, imageUrl, videoUrl, firstNetAt:{} };
-      lastPingCache.set(ref.id,temp); upsertMarker(temp);
-
-      closeModal('createModal'); $('#pingText').value=''; $('#lat').value=''; $('#lon').value=''; if(attachInput) attachInput.value='';
-      await refreshQuota(currentUser.uid);
       
-      // SEND NOTIFICATIONS FOR MENTIONS - WITH VISIBILITY CHECK!
-      console.log('📧 Sending notifications for mentions...');
-      if (resolvedMentions.length === 0) {
-        console.log('📧 No mentions to notify about');
-      } else {
-        // 👥 Expand @friends to individual friends for notifications
-        const notificationTargets = await expandMentionsForNotifications(resolvedMentions);
-        console.log(`📧 Expanded to ${notificationTargets.length} notification targets`);
-        
-        // For private pings, only notify friends
-        let allowedUids = new Set();
-        if(visibility === 'private'){
-          // Get author's friend list using helper
-          allowedUids = await getFriendsList(currentUser.uid);
-          console.log(`📧 Private ping - only notifying ${allowedUids.size} friends`);
-        }
-        
-        for (const mention of notificationTargets) {
-          // Skip mention if private ping and user is not a friend
-          if(visibility === 'private' && !allowedUids.has(mention.uid)){
-            console.log(`📧 Skipping mention @${mention.handle} - not a friend (private ping)`);
-            continue;
-          }
-          
-          console.log(`📧 Sending notification for mention: @${mention.handle} (${mention.uid})`);
-          await sendNotification(mention.uid, 'mention', {
-            pingId: ref.id,
-            pingText: text,
-            mentionHandle: mention.handle
-          });
-        }
-        console.log(`📧 Sent mention notifications`);
+      if(!result || !result.success || !result.pingId) {
+        throw new Error('Failed to create ping');
       }
-      showToast('Ping posted');
+      
+      const pingId = result.pingId;
+      console.log('✅ Ping created securely:', pingId);
+
+      // Refresh local cache
+      const temp = { 
+        id: pingId, 
+        text, 
+        lat, 
+        lon, 
+        createdAt: {toDate: () => new Date()}, 
+        uid: currentUser.uid,
+        authorId: currentUser.uid,
+        visibility, 
+        imageUrl, 
+        videoUrl,
+        reactions: {},
+        commentCount: 0
+      };
+      lastPingCache.set(pingId, temp); 
+      upsertMarker(temp);
+
+      closeModal('createModal'); 
+      $('#pingText').value=''; 
+      $('#lat').value=''; 
+      $('#lon').value=''; 
+      if(attachInput) attachInput.value='';
+      if(attachPreview) attachPreview.style.display = 'none';
+      if(attachVideoPreview) attachVideoPreview.style.display = 'none';
+      
+      await refreshQuota(currentUser.uid);
+      showToast('Ping posted', 'success');
     }catch(e){ 
       console.error(e); 
       showToast((e.code||'error')+': '+(e.message||'Error posting')); 
@@ -5247,27 +5226,25 @@ startRequestsListeners(currentUser.uid);
   $('#sendComment').onclick=async()=>{
     if(!openId) return; if(!currentUser) return showToast('Sign in first');
     if(currentUser.isAnonymous) return showToast("Guests can't comment");
-    const t=(commentInput.value||'').trim(); if(!t) return; if(/\b[A-Z][a-z]+\s+[A-Z][a-z]+\b/.test(t)) return showToast('No real names');
-    // Mentions in comments
-    let storedMentions = [];
+    const t=(commentInput.value||'').trim(); 
+    if(!t) return; 
+    if(/\b[A-Z][a-z]+\s+[A-Z][a-z]+\b/.test(t)) return showToast('No real names');
+    
     try{
-      // Load ping to know visibility and author/friends
-      // SIMPLE MENTION HANDLING FOR COMMENTS
-      console.log('🎯 Starting mention processing for comment...');
-      console.log('🎯 Comment text:', t);
-      console.log('🎯 Current user:', currentUser?.uid);
+      // 🔒 SECURITY: Use Cloud Function for secure comment creation
+      console.log('🔒 Creating comment via secure Cloud Function...');
       
-      const mentions = parseMentions(t);
-      const resolvedMentions = await resolveMentions(mentions);
-      console.log('📝 Final resolved mentions for comment:', resolvedMentions);
+      const result = await addCommentSecure(openId, t);
       
-      // Save comment with mentions
-      await pingsRef.doc(openId).collection('comments').doc(currentUser.uid).set({ 
-        text:t, 
-        authorId:currentUser.uid, 
-        createdAt:firebase.firestore.FieldValue.serverTimestamp(), 
-        mentions: resolvedMentions 
-      });
+      if(!result || !result.success) {
+        throw new Error('Failed to add comment');
+      }
+      
+      console.log('✅ Comment added securely');
+      commentInput.value = '';
+      
+      // Note: Comment will appear via real-time listener
+      // No need to manually update UI
       
       // SEND FRIEND COMMENT NOTIFICATION TO PING AUTHOR
       try{
@@ -5726,49 +5703,40 @@ startRequestsListeners(currentUser.uid);
   }
 
   async function acceptFriendRequest(reqId){
-    const [fromUid,toUid] = reqId.split('_'); if(toUid!==currentUser.uid) throw new Error('not recipient');
-    await db.runTransaction(async (tx)=>{
-      const rRef = db.collection('friendRequests').doc(reqId);
-      const rdoc = await tx.get(rRef);
-      if(!rdoc.exists || rdoc.data().status!=='pending') return;
-      const aRef = usersRef.doc(fromUid), bRef = usersRef.doc(toUid);
-      tx.update(aRef, { friendIds: firebase.firestore.FieldValue.arrayUnion(toUid) });
-      tx.update(bRef, { friendIds: firebase.firestore.FieldValue.arrayUnion(fromUid) });
-      tx.update(rRef, { status:'accepted', acceptedAt: firebase.firestore.FieldValue.serverTimestamp() });
-    });
-    // Award PPs to both friends once (dedupe via meta doc)
     try{
-      const [fromUid,toUid] = reqId.split('_');
-      const metaId = `friend_award_${[fromUid,toUid].sort().join('_')}`;
-      await db.runTransaction(async (tx)=>{
-        const mref = db.collection('meta').doc(metaId);
-        const msnap = await tx.get(mref);
-        if(msnap.exists) return;
-        tx.set(mref, { type:'friend_award', at: firebase.firestore.FieldValue.serverTimestamp() });
-        const aRef = usersRef.doc(fromUid), bRef = usersRef.doc(toUid);
-        const [aSnap,bSnap] = await Promise.all([tx.get(aRef), tx.get(bRef)]);
-        const aPts = Math.max(0, Number(aSnap.exists ? aSnap.data().points||0 : 0) + 5);
-        const bPts = Math.max(0, Number(bSnap.exists ? bSnap.data().points||0 : 0) + 5);
-        tx.set(aRef, { points: aPts }, { merge:true });
-        tx.set(bRef, { points: bPts }, { merge:true });
-      });
-      showToast('+5 PPs — friend connected');
-    }catch(_){ }
-    // Notify sender (dedupe via fixed doc id)
-    try{
-      await db.runTransaction(async tx=>{
-        const nref = usersRef.doc(fromUid).collection('notifications').doc('friend_accept_'+currentUser.uid);
-        const snap = await tx.get(nref);
-        if(!snap.exists){ tx.set(nref,{ type:'friend_accept', partner: currentUser.uid, createdAt: firebase.firestore.FieldValue.serverTimestamp() }); }
-      });
-    }catch(_){ }
-    await refreshFriends();
+      // 🔒 SECURITY: Use Cloud Function for secure friend request acceptance
+      console.log('🔒 Accepting friend request via secure Cloud Function...');
+      
+      const result = await acceptFriendRequestSecure(reqId);
+      
+      if(!result || !result.success) {
+        throw new Error('Failed to accept friend request');
+      }
+      
+      console.log('✅ Friend request accepted securely');
+      showToast('Friend request accepted', 'success');
+      await refreshFriends();
+    }catch(e){
+      showToast(e.message||'Failed to accept request', 'error');
+      console.error(e);
+    }
   }
   async function declineFriendRequest(reqId){
-    const rRef = db.collection('friendRequests').doc(reqId);
-    await rRef.set({ status:'declined', decidedAt: firebase.firestore.FieldValue.serverTimestamp() }, { merge:true });
-    // Clean up stale reverse request if exists and not accepted
-    try{ const [a,b]=reqId.split('_'); const rev=db.collection('friendRequests').doc(b+'_'+a); const doc=await rev.get(); if(doc.exists && (doc.data().status||'pending')!=='accepted'){ await rev.delete(); } }catch(_){ }
+    try{
+      // 🔒 SECURITY: Use Cloud Function for secure friend request rejection
+      console.log('🔒 Rejecting friend request via secure Cloud Function...');
+      
+      const result = await rejectFriendRequestSecure(reqId);
+      
+      if(!result || !result.success) {
+        throw new Error('Failed to reject friend request');
+      }
+      
+      console.log('✅ Friend request rejected securely');
+    }catch(e){
+      console.error('Error rejecting friend request:', e);
+      // Silent fail for reject - not critical
+    }
   }
   async function cancelFriendRequest(reqId){
     const rRef = db.collection('friendRequests').doc(reqId);
@@ -6284,75 +6252,44 @@ startRequestsListeners(currentUser.uid);
       if(!currentUser) return showToast('Sign in first');
       let raw = (handleInput && handleInput.value || '').trim();
       if(!raw) return;
-      raw = raw.toLowerCase().replace(/[^a-z0-9_.]/g,'').slice(0,24);
-      if(!raw) return showToast('Invalid username');
-      if(raw === 'friends') return showToast('That name is reserved');
-      // Check availability (allow if it's already mine)
+      
       try{
-        const hRef = db.collection('handles').doc(raw);
-        const exists = await hRef.get();
-        if(exists.exists && exists.data() && exists.data().uid !== currentUser.uid){ showToast('Name taken'); return; }
-        const uref = usersRef.doc(currentUser.uid); const ud = await uref.get(); const prev = ud.exists? (ud.data().handle||null) : null;
-        if(prev === raw){
-          try{ await refreshAuthUI(currentUser); }catch(_){ }
-          try{ await updateHandleCooldownUI(); }catch(_){ }
-          showToast('Username saved');
-          return;
+        // 🔒 SECURITY: Use Cloud Function for atomic username update
+        console.log('🔒 Updating username via secure Cloud Function...');
+        
+        const result = await updateUsernameSecure(raw);
+        
+        if(!result || !result.success) {
+          throw new Error('Failed to update username');
         }
-        // 🔒 ATOMIC TRANSACTION: Ensure old handle is deleted BEFORE new one is set
-        const now = firebase.firestore.FieldValue.serverTimestamp();
         
-        await db.runTransaction(async (tx) => {
-          // 1️⃣ Delete old handle first (if exists and different)
-          if(prev && prev !== raw) {
-            const oldHandleRef = db.collection('handles').doc(prev.toLowerCase());
-            tx.delete(oldHandleRef);
-            console.log('🗑️ Deleting old handle:', prev);
-          }
-          
-          // 2️⃣ Set new handle mapping
-          tx.set(hRef, { uid: currentUser.uid, updatedAt: now });
-          
-          // 3️⃣ Update user document
-          tx.set(uref, { handle: raw, handleLC: raw, lastHandleChangeAt: now }, { merge:true });
-          
-          console.log('✅ Transaction complete - handle updated to:', raw);
-        });
+        const finalUsername = result.username;
+        console.log('✅ Username updated securely to:', finalUsername);
         
-        // 4️⃣ Add ledger entry (outside transaction)
-        try{ 
-          await uref.collection('ledger').add({ ts: now, type:'handle_change', amount:0 }); 
-        }catch(_){ }
-        
-        // 🧹 AGGRESSIVE CACHE CLEARING: Clear ALL caches, not just current user
-        console.log('🧹 Clearing ALL handle caches after username change...');
+        // Clear caches
         if(typeof clearAllHandleCaches === 'function') {
           clearAllHandleCaches();
         }
         
-        // 5️⃣ IMMEDIATE UI UPDATE: Set new handle in cache and display
+        // Update local cache
         if(typeof uidHandleCache !== 'undefined') {
-          uidHandleCache.set(currentUser.uid, `@${raw}`);
+          uidHandleCache.set(currentUser.uid, `@${finalUsername}`);
           if(typeof handleCacheTimestamps !== 'undefined') {
             handleCacheTimestamps.set(currentUser.uid, Date.now());
           }
-          console.log('✅ Updated cache with new handle:', raw);
         }
         
+        // Update UI
         const profileName = document.getElementById('profileName');
         if(profileName) {
-          profileName.textContent = `@${raw}`;
-          console.log('✅ Immediately updated display to:', raw);
+          profileName.textContent = `@${finalUsername}`;
         }
         
-        // 🔄 Force refresh all visible pings to show new username
+        // Refresh ping displays
         try {
-          // Re-render all markers to show updated username
           if(typeof lastPingCache !== 'undefined' && lastPingCache) {
-            console.log('🔄 Refreshing all ping displays with new username...');
             lastPingCache.forEach(ping => {
-              if(ping.authorId === currentUser.uid) {
-                // Force re-render this marker
+              if(ping.authorId === currentUser.uid || ping.uid === currentUser.uid) {
                 if(typeof upsertMarker === 'function') {
                   upsertMarker(ping);
                 }
@@ -6361,11 +6298,13 @@ startRequestsListeners(currentUser.uid);
           }
         } catch(_) {}
         
-        // Post-write UI updates should not flip success status
         try{ await refreshAuthUI(currentUser); }catch(_){ }
         try{ await updateHandleCooldownUI(); }catch(_){ }
-        showToast('Username updated');
-      }catch(e){ console.error(e); showToast('Username update failed'); }
+        showToast('Username updated', 'success');
+      }catch(e){ 
+        showToast(e.message||'Failed to update username', 'error'); 
+        console.error(e); 
+      }
     };
   }
 
