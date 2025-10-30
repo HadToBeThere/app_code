@@ -192,7 +192,7 @@ exports.createPing = functions.https.onCall(async (data, context) => {
     const now = FieldValue.serverTimestamp();
     
     const pingData = {
-      uid,
+      authorId: uid, // Use authorId for compatibility with existing app code
       text: trimmedText,
       lat,
       lon,
@@ -201,8 +201,14 @@ exports.createPing = functions.https.onCall(async (data, context) => {
       videoUrl: videoUrl || null,
       customPinUrl: (isSub && customPinUrl) ? customPinUrl : null,
       createdAt: now,
+      likes: 0,
+      dislikes: 0,
+      flags: 0,
+      status: 'live',
+      authorIsSubscriber: isSub,
       reactions: {},
       commentCount: 0,
+      firstNetAt: {}, // milestones map
       hidden: false
     };
     
@@ -279,9 +285,9 @@ exports.addComment = functions.https.onCall(async (data, context) => {
     }
     
     // Check visibility permissions
-    if (pingData.visibility === 'private' && pingData.uid !== uid) {
+    if (pingData.visibility === 'private' && pingData.authorId !== uid) {
       // Check if friends
-      const friendDoc = await db.collection('users').doc(uid).collection('friends').doc(pingData.uid).get();
+      const friendDoc = await db.collection('users').doc(uid).collection('friends').doc(pingData.authorId).get();
       if (!friendDoc.exists) {
         throw new functions.https.HttpsError('permission-denied', 'Cannot access this ping');
       }
@@ -290,7 +296,7 @@ exports.addComment = functions.https.onCall(async (data, context) => {
     // Create comment
     const commentRef = db.collection('pings').doc(pingId).collection('comments').doc();
     await commentRef.set({
-      uid,
+      authorId: uid, // Use authorId for compatibility
       text: trimmedText,
       createdAt: FieldValue.serverTimestamp()
     });
@@ -301,8 +307,8 @@ exports.addComment = functions.https.onCall(async (data, context) => {
     });
     
     // Send notification to ping author (if not commenting on own ping)
-    if (pingData.uid !== uid) {
-      await sendNotification(pingData.uid, 'comment', {
+    if (pingData.authorId && pingData.authorId !== uid) {
+      await sendNotification(pingData.authorId, 'comment', {
         fromUid: uid,
         pingId,
         commentText: trimmedText
