@@ -3,18 +3,24 @@
  * All database writes must go through these functions for security
  */
 
-// Initialize Firebase Functions
-const functions = firebase.functions();
+// Initialize Firebase Functions (lazy-loaded to avoid initialization errors)
+let functions = null;
 
-// For local development, uncomment this line:
-// functions.useFunctionsEmulator('http://localhost:5001');
+function getFunctions() {
+  if (!functions) {
+    functions = firebase.functions();
+    // For local development, uncomment this line:
+    // functions.useFunctionsEmulator('http://localhost:5001');
+  }
+  return functions;
+}
 
 /**
  * Create a new ping (server-side validation)
  */
 async function createPingSecure(data) {
   try {
-    const createPing = functions.httpsCallable('createPing');
+    const createPing = getFunctions().httpsCallable('createPing');
     const result = await createPing({
       text: data.text,
       lat: data.lat,
@@ -49,7 +55,7 @@ async function createPingSecure(data) {
  */
 async function addCommentSecure(pingId, text) {
   try {
-    const addComment = functions.httpsCallable('addComment');
+    const addComment = getFunctions().httpsCallable('addComment');
     const result = await addComment({ pingId, text });
     return result.data;
   } catch (error) {
@@ -70,7 +76,7 @@ async function addCommentSecure(pingId, text) {
  */
 async function toggleReactionSecure(pingId, emoji) {
   try {
-    const toggleReaction = functions.httpsCallable('toggleReaction');
+    const toggleReaction = getFunctions().httpsCallable('toggleReaction');
     const result = await toggleReaction({ pingId, emoji });
     return result.data;
   } catch (error) {
@@ -84,7 +90,7 @@ async function toggleReactionSecure(pingId, emoji) {
  */
 async function updateUsernameSecure(username) {
   try {
-    const updateUsername = functions.httpsCallable('updateUsername');
+    const updateUsername = getFunctions().httpsCallable('updateUsername');
     const result = await updateUsername({ username });
     return result.data;
   } catch (error) {
@@ -105,7 +111,7 @@ async function updateUsernameSecure(username) {
  */
 async function sendFriendRequestSecure(identifier) {
   try {
-    const sendFriendRequest = functions.httpsCallable('sendFriendRequest');
+    const sendFriendRequest = getFunctions().httpsCallable('sendFriendRequest');
     const result = await sendFriendRequest({ identifier });
     return result.data;
   } catch (error) {
@@ -126,7 +132,7 @@ async function sendFriendRequestSecure(identifier) {
  */
 async function acceptFriendRequestSecure(requestId) {
   try {
-    const acceptFriendRequest = functions.httpsCallable('acceptFriendRequest');
+    const acceptFriendRequest = getFunctions().httpsCallable('acceptFriendRequest');
     const result = await acceptFriendRequest({ requestId });
     return result.data;
   } catch (error) {
@@ -140,7 +146,7 @@ async function acceptFriendRequestSecure(requestId) {
  */
 async function rejectFriendRequestSecure(requestId) {
   try {
-    const rejectFriendRequest = functions.httpsCallable('rejectFriendRequest');
+    const rejectFriendRequest = getFunctions().httpsCallable('rejectFriendRequest');
     const result = await rejectFriendRequest({ requestId });
     return result.data;
   } catch (error) {
