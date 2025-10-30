@@ -218,15 +218,17 @@ exports.createPing = functions.https.onCall(async (data, context) => {
     const today = getTodayString();
     const quotaRef = db.collection('users').doc(uid).collection('quota').doc(today);
     
+    // Update quota with merge (creates if doesn't exist)
     await quotaRef.set({
       used: FieldValue.increment(1),
       lastPingAt: now
     }, { merge: true });
     
-    await userDoc.ref.update({
+    // Update user stats with merge (creates fields if don't exist)
+    await userDoc.ref.set({
       lastPingAt: now,
       totalPings: FieldValue.increment(1)
-    });
+    }, { merge: true });
     
     console.log(`✅ Ping created: ${pingRef.id} by user ${uid}`);
     
@@ -237,15 +239,20 @@ exports.createPing = functions.https.onCall(async (data, context) => {
     };
     
   } catch (error) {
-    console.error('Error creating ping:', error);
+    console.error('❌ Error creating ping:', error);
+    console.error('Error details:', {
+      code: error.code,
+      message: error.message,
+      stack: error.stack
+    });
     
     // Re-throw HttpsErrors
     if (error instanceof functions.https.HttpsError) {
       throw error;
     }
     
-    // Wrap other errors
-    throw new functions.https.HttpsError('internal', 'Failed to create ping');
+    // Wrap other errors with more detail
+    throw new functions.https.HttpsError('internal', `Failed to create ping: ${error.message}`);
   }
 });
 

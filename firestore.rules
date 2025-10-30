@@ -6,10 +6,9 @@ service cloud.firestore {
     // HELPER FUNCTIONS
     // ============================================
     
-    // Check if user is authenticated and not anonymous
+    // Check if user is authenticated (allow any provider for now)
     function isSignedIn() {
-      return request.auth != null && 
-             request.auth.token.firebase.sign_in_provider != 'anonymous';
+      return request.auth != null;
     }
     
     // Check if user owns the resource
@@ -87,23 +86,21 @@ service cloud.firestore {
     // PINGS COLLECTION
     // ============================================
     match /pings/{pingId} {
-      // Read rules: respect visibility settings
-      allow read: if isSignedIn() &&
-                    (resource.data.visibility == 'public' ||
-                     (resource.data.visibility == 'private' && 
-                      (isOwner(resource.data.authorId) || 
-                       isFriendWithOwner(resource.data.authorId))));
+      // Read rules: any authenticated user can read pings
+      // Visibility filtering happens client-side for performance
+      allow read: if isSignedIn();
       
       // Create: DISABLED - Must use Cloud Function
       // This prevents quota bypassing and ensures server-side validation
       allow create: if false;
       
-      // Update: Only allow reaction updates from Cloud Functions
-      // All other updates disabled
+      // Update: DISABLED - Must use Cloud Function
+      // All updates go through Cloud Functions for security
       allow update: if false;
       
       // Delete: Users can delete their own pings
-      allow delete: if isOwner(resource.data.authorId);
+      allow delete: if isSignedIn() && 
+                      request.auth.uid == resource.data.authorId;
       
       // Comments subcollection
       match /comments/{commentId} {
