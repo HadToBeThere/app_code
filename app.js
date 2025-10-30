@@ -3632,19 +3632,15 @@ startRequestsListeners(currentUser.uid);
   async function upsertMarker(p){
     if(typeof p.lat!=='number' || typeof p.lon!=='number') return;
     
-    // Check if ping has media that needs moderation
-    if (p.imageUrl || p.videoUrl) {
-      try {
-        const shouldDelete = await analyzeExistingPingContent(p);
+    // Queue NSFW check instead of blocking UI (prevents crashes)
+    if ((p.imageUrl || p.videoUrl) && window.nsfwQueue) {
+      window.nsfwQueue.add(p.id, p.imageUrl, p.videoUrl).then(shouldDelete => {
         if (shouldDelete) {
-          console.log(`Deleting ping ${p.id} due to NSFW content`);
-          await deletePingForNSFW(p.id, 'inappropriate content detected in existing ping');
-          return; // Don't add marker for deleted ping
+          console.log(`Removing ping ${p.id} due to NSFW content`);
+          removeMarker(p.id);
+          deletePingForNSFW(p.id, 'inappropriate content detected').catch(console.error);
         }
-      } catch (error) {
-        console.error('Error analyzing existing ping content:', error);
-        // If analysis fails, allow ping to be displayed
-      }
+      }).catch(err => console.error('NSFW check error:', err));
     }
     
     const isPotw = !!(currentPotw && currentPotw.id===p.id);
@@ -3656,18 +3652,69 @@ startRequestsListeners(currentUser.uid);
     } else {
       markers.get(p.id).setIcon(icon);
     }
-    // Hotspot may need recomputing when markers change (always based on All)
     scheduleHotspotRecompute();
   }
   function removeMarker(id){ const m=markers.get(id); if(m){ map.removeLayer(m); markers.delete(id); } }
-  function reFilterMarkers(){ lastPingCache.forEach((p,id)=>{ const allowed=shouldShow(p); const on=markers.has(id); if(allowed&&!on) upsertMarker(p); else if(!allowed&&on) removeMarker(id); }); updateHotspotVisibility(); }
-  function restyleMarkers(){ markers.forEach(async (m,id)=>{ try{ const p=lastPingCache.get(id); if(!p) return; const isPotw=!!(currentPotw && currentPotw.id===id); const icon = await iconForPing(p, isPotw); m.setIcon(icon); }catch(_){ } }); }
+  
+  // Debounced to prevent excessive CPU usage
+  const reFilterMarkers = (window.debounce ? window.debounce(function(){ 
+    lastPingCache.forEach((p,id)=>{ 
+      const allowed=shouldShow(p); 
+      const on=markers.has(id); 
+      if(allowed&&!on) upsertMarker(p); 
+      else if(!allowed&&on) removeMarker(id); 
+    }); 
+    updateHotspotVisibility(); 
+  }, 200) : function(){ 
+    lastPingCache.forEach((p,id)=>{ 
+      const allowed=shouldShow(p); 
+      const on=markers.has(id); 
+      if(allowed&&!on) upsertMarker(p); 
+      else if(!allowed&&on) removeMarker(id); 
+    }); 
+    updateHotspotVisibility(); 
+  });
+  
+  // Debounced and batched to prevent UI freezing
+  const restyleMarkers = (window.debounce ? window.debounce(async function(){ 
+    const updates = Array.from(markers.entries()).map(([id, m]) => ({id, m, p: lastPingCache.get(id)})).filter(u => u.p);
+    if (window.batchProcess) {
+      await window.batchProcess(updates, async ({id, m, p}) => {
+        try {
+          const isPotw = !!(currentPotw && currentPotw.id===id);
+          const icon = await iconForPing(p, isPotw);
+          m.setIcon(icon);
+        } catch(e) { console.error('Icon update error:', e); }
+      }, 10, 50);
+    } else {
+      for (const {id, m, p} of updates) {
+        try {
+          const isPotw = !!(currentPotw && currentPotw.id===id);
+          const icon = await iconForPing(p, isPotw);
+          m.setIcon(icon);
+        } catch(e) {}
+      }
+    }
+  }, 500) : async function(){ 
+    markers.forEach(async (m,id)=>{ 
+      try{ 
+        const p=lastPingCache.get(id); 
+        if(!p) return; 
+        const isPotw=!!(currentPotw && currentPotw.id===id); 
+        const icon = await iconForPing(p, isPotw); 
+        m.setIcon(icon); 
+      }catch(_){ } 
+    }); 
+  });
 
   function startLive(){
     if(unsubscribe) unsubscribe();
-    // Avoid depending on client clock (can hide recent pings if clock is wrong)
+    // Dynamic limit based on device capability (prevents iOS crashes)
+    const pingLimit = (window.getOptimalPingLimit && window.getOptimalPingLimit()) || 
+                      (window.innerWidth < 768 ? 100 : 200);
+    console.log(`📊 Loading ${pingLimit} pings (device-optimized)`);
     unsubscribe = pingsRef
-  .orderBy('createdAt','desc').limit(800)
+  .orderBy('createdAt','desc').limit(pingLimit)
   .onSnapshot(s=>{
     s.docChanges().forEach(ch=>{
       const p={id:ch.doc.id, ...ch.doc.data()};
