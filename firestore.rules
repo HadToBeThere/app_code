@@ -47,11 +47,9 @@ service cloud.firestore {
       // Anyone authenticated can read user profiles
       allow read: if isSignedIn();
       
-      // Users can only create their own document
-      allow create: if isOwner(userId) && 
-                      request.resource.data.keys().hasAll(['email', 'createdAt']) &&
-                      request.resource.data.email == request.auth.token.email &&
-                      request.resource.data.uid == request.auth.uid;
+      // Users can create their own document
+      // More permissive to allow initial setup
+      allow create: if isOwner(userId);
       
       // Users can only update their own profile
       // Prevent modification of critical fields
