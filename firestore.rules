@@ -129,9 +129,18 @@ service cloud.firestore {
       // Anyone can read handles (for lookup)
       allow read: if true;
       
-      // Write: DISABLED - Must use Cloud Function for atomic operations
-      // This prevents race conditions and duplicate handles
-      allow write: if false;
+      // Create: Allow authenticated users to claim unclaimed handles
+      // This is needed for initial user setup
+      allow create: if isSignedIn() && 
+                      request.resource.data.uid == request.auth.uid &&
+                      request.resource.data.keys().hasAll(['uid', 'createdAt']);
+      
+      // Update: DISABLED - Use Cloud Function for username changes
+      // This prevents race conditions and ensures atomic handle swaps
+      allow update: if false;
+      
+      // Delete: DISABLED - Handles should never be deleted directly
+      allow delete: if false;
     }
     
     // ============================================
