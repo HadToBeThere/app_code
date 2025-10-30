@@ -790,7 +790,6 @@ async function main(){
       showToast('Error removing content', 'error');
     }
   }
-  
   // Manual moderation system check and fix (call from console: checkModeration())
   window.checkModeration = async function() {
     console.log('🔍 Checking moderation system status...');
@@ -1567,7 +1566,6 @@ async function main(){
       console.error('Error loading other profile data:', e);
     }
   }
-  
   // Open profile modal with proper initialization
   function openProfileModal(view = PROFILE_VIEW.OWN, uid = null) {
     console.log('Opening profile modal with view:', view, 'uid:', uid);
@@ -2326,7 +2324,6 @@ async function main(){
       });
     }catch(e){ console.warn('daily login award failed', e); }
   }
-
   // On first ping of the day: update ping streak and award floor(streak/2), cap 25; toast
   async function awardOnFirstPingOfDay(uid){
     try{
@@ -2998,7 +2995,6 @@ startRequestsListeners(currentUser.uid);
       console.log('🔍 Address search visibility:', shouldShow ? 'shown' : 'hidden');
     }
   }
-
   // Debounced search function
   async function searchAddress(query) {
     console.log('🔍 Searching for:', query);
@@ -3768,7 +3764,6 @@ startRequestsListeners(currentUser.uid);
       console.error('Error refreshing timestamps:', err);
     }
   }, 30000); // 30 seconds
-
   // ⌨️ KEYBOARD SHORTCUTS: Power user features
   document.addEventListener('keydown', (e) => {
     // Don't trigger shortcuts if user is typing in an input/textarea
@@ -4545,7 +4540,6 @@ startRequestsListeners(currentUser.uid);
     $('#quotaText').textContent=`${Math.min(used,MAX_PINGS_PER_DAY)}/${MAX_PINGS_PER_DAY} pings today`;
     return used;
   }
-
   /* --------- Image upload (Firebase Storage) --------- */
   async function uploadPingImage(file, uid){
     // Compress large images to avoid oversized data URLs in local dev
@@ -5182,94 +5176,18 @@ startRequestsListeners(currentUser.uid);
   async function setVote(pingId,type){
     if(!currentUser) return showToast('Sign in first');
     if(currentUser.isAnonymous) return showToast("Guests can't react");
-    const vid=`${pingId}_${currentUser.uid}`;
-    let awardResult=null;
-    let milestoneData=null;
-    await db.runTransaction(async tx=>{
-      const pRef=pingsRef.doc(pingId), vRef=votesRef.doc(vid);
-      const [pSnap,vSnap]=await Promise.all([tx.get(pRef), tx.get(vRef)]);
-      if(!pSnap.exists) return;
-      let p=pSnap.data(), prev=vSnap.exists? vSnap.data().type:null;
-
-      // Compute new like/dislike tallies
-      if(prev==='like') p.likes=Math.max(0,(p.likes||0)-1);
-      if(prev==='dislike') p.dislikes=Math.max(0,(p.dislikes||0)-1);
-
-      let newPrev = prev===type ? null : type;
-      if(prev===type){
-        tx.delete(vRef);
-      }else{
-        tx.set(vRef,{pingId,userId:currentUser.uid,type,createdAt:firebase.firestore.FieldValue.serverTimestamp()});
-        if(type==='like') p.likes=(p.likes||0)+1; else p.dislikes=(p.dislikes||0)+1;
-      }
-
-      const beforeNet = Math.max(0, (pSnap.data().likes||0) - (pSnap.data().dislikes||0));
-      const afterNet  = Math.max(0, (p.likes||0) - (p.dislikes||0));
-
-      // Record firstNetAt milestones for net like counts we just crossed upwards (cap at 200)
-      const maxMilestone = 200;
-      const updates = {};
-      const mapNow = p.firstNetAt || {};
-      if(afterNet > beforeNet){
-        for(let k = beforeNet+1; k <= Math.min(afterNet, maxMilestone); k++){
-          if(!mapNow[String(k)]){
-            mapNow[String(k)] = firebase.firestore.FieldValue.serverTimestamp();
-          }
-        }
-      }
-      updates.firstNetAt = mapNow;
-      updates.likes = p.likes||0; updates.dislikes = p.dislikes||0;
-
-      tx.update(pRef, updates);
-      // Compute milestone crossings for PP awards (up) and penalties (down)
-      const beforeMil = Math.floor(beforeNet/3);
-      const afterMil  = Math.floor(afterNet/3);
-      const up   = Math.max(0, afterMil - beforeMil);
-      const down = Math.max(0, beforeMil - afterMil);
-      awardResult = { authorId: p.authorId || pSnap.data().authorId || null, up, down };
-      
-      // Track milestone notifications (5, 10, 25, 50, 100)
-      const notificationMilestones = [5, 10, 25, 50, 100];
-      const crossedMilestones = [];
-      for(const milestone of notificationMilestones){
-        if(beforeNet < milestone && afterNet >= milestone){
-          crossedMilestones.push(milestone);
-        }
-      }
-      if(crossedMilestones.length > 0 && p.authorId){
-        milestoneData = {
-          authorId: p.authorId,
-          milestones: crossedMilestones,
-          pingText: p.text || 'Your ping',
-          pingId: pingId
-        };
-      }
-    }).catch(e=>console.error(e));
-    // Apply PP delta based on milestone crossings
     try{
-      if(awardResult && awardResult.authorId){
-        const delta = (awardResult.up||0) - (awardResult.down||0);
-        if(delta!==0){ await awardPoints(awardResult.authorId, delta, 'like_milestones'); }
-      }
-    }catch(_){ }
-    
-    // Send milestone notifications
-    try{
-      if(milestoneData && milestoneData.authorId !== currentUser.uid){
-        for(const milestone of milestoneData.milestones){
-          console.log(`📧 Sending milestone notification for ${milestone} likes to ${milestoneData.authorId}`);
-          await sendNotification(milestoneData.authorId, 'like_milestone', {
-            pingId: milestoneData.pingId,
-            milestone: milestone,
-            pingText: milestoneData.pingText
-          });
-        }
-      }
+      // Map legacy like/dislike to secure emoji reactions
+      const emoji = type === 'like' ? '👍' : '👀';
+      // 🔒 SECURITY: Use Cloud Function to toggle reaction
+      const res = await toggleReactionSecure(pingId, emoji);
+      if(!res || !res.success){ throw new Error('Failed to toggle reaction'); }
+      // Live snapshot listener will update counts; no client-side writes
     }catch(err){
-      console.error('Error sending milestone notifications:', err);
+      console.error('Reaction failed:', err);
+      showToast(err.message || 'Could not react');
     }
   }
-
   $('#sendComment').onclick=async()=>{
     if(!openId) return; if(!currentUser) return showToast('Sign in first');
     if(currentUser.isAnonymous) return showToast("Guests can't comment");
@@ -6628,9 +6546,6 @@ startRequestsListeners(currentUser.uid);
   }
 
   async function refreshTopProfileStats(){ try{ if(currentUser){ const d=await usersRef.doc(currentUser.uid).get(); const u=d.exists? d.data():{}; const ownStatsLine=document.getElementById('ownStatsLine'); if(ownStatsLine){ const pts=Number(u.points||0); const streak=Number(u.streakDays||0); ownStatsLine.textContent = `${pts} PPs • 🔥 ${streak}`; } } }catch(_){ } }
-  
-
-
   // Handle custom ping image upload (1000-tier)
   if(customPingInput){
     customPingInput.onchange = ()=>{
@@ -7269,7 +7184,6 @@ startRequestsListeners(currentUser.uid);
   try{ window.startNotifListener = startNotifListener; }catch(_){ }
 
   /* --------- Ping of the Week --------- */
-
   const potwCard = $('#potwCard');
   const potwImg  = $('#potwImg');
   const potwText = $('#potwText');
@@ -7963,4 +7877,3 @@ setTimeout(function(){ try { applyModalOpenClass(); } catch(e) {} }, 100);
 }
 // Start the app
 main().catch(console.error);
-
