@@ -8,9 +8,16 @@ let functions = null;
 
 function getFunctions() {
   if (!functions) {
-    functions = firebase.functions();
-    // For local development, uncomment this line:
-    // functions.useFunctionsEmulator('http://localhost:5001');
+    console.log('🔧 Initializing Firebase Functions...');
+    try {
+      functions = firebase.functions();
+      console.log('✅ Firebase Functions initialized successfully');
+      // For local development, uncomment this line:
+      // functions.useFunctionsEmulator('http://localhost:5001');
+    } catch (error) {
+      console.error('❌ Error initializing Firebase Functions:', error);
+      throw error;
+    }
   }
   return functions;
 }
@@ -20,7 +27,11 @@ function getFunctions() {
  */
 async function createPingSecure(data) {
   try {
-    const createPing = getFunctions().httpsCallable('createPing');
+    console.log('🔧 Getting Functions instance...');
+    const functionsInstance = getFunctions();
+    console.log('🔧 Creating callable reference...');
+    const createPing = functionsInstance.httpsCallable('createPing');
+    console.log('🔧 Calling createPing function...');
     const result = await createPing({
       text: data.text,
       lat: data.lat,
