@@ -160,11 +160,17 @@ The app now includes:
 
 ## 🎯 Updates
 
-**When you push to Git:**
-1. Changes are saved in version control
-2. **NOT** automatically deployed
+**Automatic Deployment (NEW!):**
+- ✅ **Pushing to `main` branch automatically deploys to Firebase**
+- Takes ~2-3 minutes per deployment
+- View status: https://github.com/HadToBeThere/app_code/actions
 
-**To deploy updates:**
+**Setup Required (One-time):**
+1. Get Firebase token: `firebase login:ci` (in your terminal)
+2. Add token to GitHub: Repository → Settings → Secrets → Add `FIREBASE_TOKEN`
+3. See `SETUP-AUTO-DEPLOY.md` for detailed steps
+
+**Manual Deploy (if needed):**
 ```bash
 firebase deploy --only hosting  # Just web files
 firebase deploy --only functions # Just Cloud Functions
