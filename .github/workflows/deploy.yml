@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - main
+  pull_request:
+    branches:
+      - main
   workflow_dispatch: # Allows manual triggering from GitHub UI
 
 jobs:
@@ -28,9 +31,40 @@ jobs:
         working-directory: functions
         run: npm ci
       
-      - name: Deploy to Firebase
+      - name: Deploy to Firebase (Production)
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
         env:
           FIREBASE_TOKEN: ${{ secrets.FIREBASE_TOKEN }}
         run: |
+          echo "🚀 Deploying to PRODUCTION..."
           firebase deploy --project had-to-be-there-18cd7 --non-interactive
+      
+      - name: Deploy Preview Channel (Pull Request)
+        id: deploy-preview
+        if: github.event_name == 'pull_request'
+        env:
+          FIREBASE_TOKEN: ${{ secrets.FIREBASE_TOKEN }}
+        run: |
+          echo "🔍 Deploying PREVIEW for PR #${{ github.event.pull_request.number }}..."
+          firebase hosting:channel:deploy pr-${{ github.event.pull_request.number }} --project had-to-be-there-18cd7 --non-interactive --expires 7d
+        continue-on-error: true
+      
+      - name: Comment Preview URL on PR
+        if: github.event_name == 'pull_request' && steps.deploy-preview.outcome == 'success'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const output = `🚀 **Preview deployed!**
+            
+            Preview URL: https://had-to-be-there-18cd7--pr-${{ github.event.pull_request.number }}.web.app
+            
+            This preview will expire in 7 days.`;
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: output
+            });
 
