@@ -159,6 +159,16 @@ service cloud.firestore {
     }
     
     // ============================================
+    // VOTES COLLECTION (Reactions)
+    // ============================================
+    match /votes/{voteId} {
+      // Allow authenticated users to read votes (used for friend reaction UI)
+      allow read: if isSignedIn();
+      // All writes must go through Cloud Functions
+      allow write: if false;
+    }
+    
+    // ============================================
     // REPORTS COLLECTION
     // ============================================
     match /reports/{reportId} {
