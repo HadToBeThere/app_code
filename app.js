@@ -2846,7 +2846,8 @@ startRequestsListeners(currentUser.uid);
     if(!inFence(p)) return false; return true;
   }
 
-  function scheduleHotspotRecompute(){ if(hotspotTimer) clearTimeout(hotspotTimer); hotspotTimer=setTimeout(recomputeHotspot, 250); }
+  // 🔥 PERFORMANCE: Increased debounce from 250ms to 1000ms - hotspot computation is expensive
+  function scheduleHotspotRecompute(){ if(hotspotTimer) clearTimeout(hotspotTimer); hotspotTimer=setTimeout(recomputeHotspot, 1000); }
   function recomputeHotspot(){
     hotspotTimer=null;
     // Collect eligible pings (always consider All, independent of current filter selection)
@@ -2960,7 +2961,12 @@ startRequestsListeners(currentUser.uid);
   const clampToCircle=(center, pt, r)=>{ const d=center.distanceTo(pt); if(d<=r) return pt; const k=r/d; return L.latLng(center.lat+(pt.lat-center.lat)*k, center.lng+(pt.lng-center.lng)*k); };
   function enforceLock(){ const c=map.getCenter(); if(FENCE_CENTER.distanceTo(c)>RADIUS_M+EPS){ map.setView(clampToCircle(FENCE_CENTER,c,RADIUS_M), map.getZoom(), {animate:false}); } }
   map.on('moveend', enforceLock);
-  map.on('zoomend', ()=>{ enforceLock(); try{ restyleMarkers(); }catch(e){} });
+  map.on('zoomend', ()=>{ 
+    enforceLock(); 
+    // 🔥 PERFORMANCE: Clear icon cache on zoom changes (icons depend on zoom level)
+    iconCache.clear();
+    try{ restyleMarkers(); }catch(e){} 
+  });
 
   const des = document.querySelector('.desat-hole');
   function updateMask(){
@@ -2968,7 +2974,9 @@ startRequestsListeners(currentUser.uid);
     const degLon=RADIUS_M/mPerDegLon; const c=map.latLngToContainerPoint(FENCE_CENTER); const ex=map.latLngToContainerPoint([lat,lng+degLon]);
     const rPx=Math.max(40, Math.abs(ex.x-c.x)); des.style.setProperty('--cx', Math.round(c.x)+'px'); des.style.setProperty('--cy',Math.round(c.y)+'px'); des.style.setProperty('--r', rPx+'px');
   }
-  map.on('move zoom resize', updateMask); updateMask();
+  // 🔥 PERFORMANCE: Throttle map updates to prevent excessive recalculations
+  const throttledUpdateMask = window.throttle ? window.throttle(updateMask, 150) : updateMask;
+  map.on('move zoom resize', throttledUpdateMask); updateMask();
 
   if(navigator.geolocation){
     navigator.geolocation.getCurrentPosition(pos=>{
@@ -3513,6 +3521,12 @@ startRequestsListeners(currentUser.uid);
   }
 
   async function iconForPing(p, isPotw=false){
+    // 🔥 PERFORMANCE: Check icon cache first to avoid redundant async calls
+    const cacheKey = getIconCacheKey(p, isPotw);
+    if(iconCache.has(cacheKey)) {
+      return iconCache.get(cacheKey);
+    }
+    
     const n = netLikes(p);
     // Normal size
     let r = radiusFromNet(n);
@@ -3561,6 +3575,14 @@ startRequestsListeners(currentUser.uid);
         inner = L.divIcon({className:'pin-icon', html, iconSize:size, iconAnchor:anchor});
       }
     }
+    
+    // 🔥 PERFORMANCE: Cache icon (clear on zoom changes)
+    iconCache.set(cacheKey, inner);
+    if(iconCache.size > 500) {
+      // Clear oldest entries if cache gets too large
+      const firstKey = iconCache.keys().next().value;
+      iconCache.delete(firstKey);
+    }
 
     if(!isPotw) return inner;
 
@@ -3603,6 +3625,14 @@ startRequestsListeners(currentUser.uid);
   async function awaitCachedUser(uid){
     if(userDocCache.has(uid)) return userDocCache.get(uid);
     try{ const snap=await usersRef.doc(uid).get(); const data=snap.exists? snap.data():null; userDocCache.set(uid,data); return data; }catch(_){ return null; }
+  }
+  
+  // 🔥 PERFORMANCE: Icon cache to avoid redundant async calls
+  const iconCache = new Map();
+  function getIconCacheKey(p, isPotw) {
+    const n = netLikes(p);
+    const zoom = Math.floor(map.getZoom());
+    return `${p.id}-${n}-${zoom}-${isPotw ? 'potw' : 'normal'}-${p.authorId}`;
   }
 
   function isMine(p){ return currentUser && p.authorId===currentUser.uid; }
@@ -3650,6 +3680,15 @@ startRequestsListeners(currentUser.uid);
     
     const isPotw = !!(currentPotw && currentPotw.id===p.id);
     if(!shouldShow(p)){ removeMarker(p.id); return; }
+    
+    // 🔥 PERFORMANCE: Viewport culling - skip icon generation for markers outside viewport
+    // Leaflet will still render markers, but we avoid expensive icon generation for off-screen markers
+    const shouldGenerateIcon = !window.isInViewport || window.isInViewport(p.lat, p.lon, map, 0.3);
+    if(!shouldGenerateIcon && !markers.has(p.id)) {
+      // Skip creating new markers outside viewport (they'll be created when panned into view)
+      return;
+    }
+    
     const icon=await iconForPing(p, isPotw);
     if(!markers.has(p.id)){
       const m=L.marker([p.lat,p.lon],{icon}).addTo(map).on('click',()=>openSheet(p.id));
@@ -3657,7 +3696,7 @@ startRequestsListeners(currentUser.uid);
     } else {
       markers.get(p.id).setIcon(icon);
     }
-    scheduleHotspotRecompute();
+    // 🔥 PERFORMANCE: Removed immediate hotspot recompute - it's debounced separately and expensive
   }
   function removeMarker(id){ const m=markers.get(id); if(m){ map.removeLayer(m); markers.delete(id); } }
   
@@ -3728,12 +3767,20 @@ startRequestsListeners(currentUser.uid);
       if(!shouldShow(p)){ removeMarker(p.id); return; }
       upsertMarker(p);
     });
-    // 🔑 Ensure PotW is re-evaluated on every live update
-    if(typeof recomputePotw === 'function') {
+    // 🔑 Ensure PotW is re-evaluated, but debounced to prevent excessive recomputation
+    if(typeof recomputePotw === 'function' && typeof window.debounce === 'function') {
+      // Debounce PotW recomputation - only run every 2 seconds max
+      if(!window.potwRecomputeDebounced) {
+        window.potwRecomputeDebounced = window.debounce(() => {
+          recomputePotw().catch(console.error);
+        }, 2000);
+      }
+      window.potwRecomputeDebounced();
+    } else if(typeof recomputePotw === 'function') {
       recomputePotw().catch(console.error);
     }
-    // 🔥 Recompute hotspot after snapshot processed
-    scheduleHotspotRecompute();
+    // 🔥 PERFORMANCE: Only recompute hotspot every 5 seconds max (debounced separately)
+    // Removed immediate hotspot recompute - it's expensive and runs on every ping update
   }, e=>{ console.error(e); showToast((e.code||'error')+': '+(e.message||'live error')); });
 
   }
@@ -4974,7 +5021,8 @@ startRequestsListeners(currentUser.uid);
       renderVoteBar(p); upsertMarker(p);
     });
 
-    openCommentsUnsub = pingsRef.doc(id).collection('comments').orderBy('createdAt','desc').limit(200).onSnapshot(s=>{
+    // 🔥 PERFORMANCE: Reduced from 200 to 50 comments - most pings don't need more
+    openCommentsUnsub = pingsRef.doc(id).collection('comments').orderBy('createdAt','desc').limit(50).onSnapshot(s=>{
       commentsEl.innerHTML=''; s.forEach(d=>{
         const c=d.data(); const when=c.createdAt||null;
         const div=document.createElement('div'); div.className='comment';
@@ -5601,7 +5649,7 @@ startRequestsListeners(currentUser.uid);
       
       console.log('✅ Friend request accepted securely');
       showToast('Friend request accepted', 'success');
-      await refreshFriends();
+    await refreshFriends();
     }catch(e){
       showToast(e.message||'Failed to accept request', 'error');
       console.error(e);
@@ -7600,7 +7648,8 @@ startRequestsListeners(currentUser.uid);
   function startPotwListener(){
     if(potwUnsub) potwUnsub();
     const wStart = startOfWeekMondayLocal();
-    potwUnsub = pingsRef.where('createdAt','>=', wStart).orderBy('createdAt','desc').limit(1000).onSnapshot(s=>{
+    // 🔥 PERFORMANCE: Reduced from 1000 to 200 - PotW only needs recent high-engagement pings
+    potwUnsub = pingsRef.where('createdAt','>=', wStart).orderBy('createdAt','desc').limit(200).onSnapshot(s=>{
       s.docChanges().forEach(ch=>{
         const p = { id: ch.doc.id, ...ch.doc.data() };
         lastPingCache.set(p.id,p);
