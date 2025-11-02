@@ -191,7 +191,14 @@
           <input id="lon" type="hidden" />
         </div>
         <div class="actions">
-          <button class="btn primary" id="submitPing" type="button">Ping</button>
+          <div style="display:flex; gap:8px; align-items:center; width:100%; justify-content:space-between">
+            <div class="seg" id="ttlSeg">
+              <button data-ttl="2">2h</button>
+              <button data-ttl="12">12h</button>
+              <button data-ttl="24" class="active">24h</button>
+            </div>
+            <button class="btn primary" id="submitPing" type="button">Ping</button>
+          </div>
         </div>
       </div>
     </div>

@@ -1436,6 +1436,8 @@ async function main(){
         }
       }
       
+      // No dev flags persisted in UI; keep runtime clean
+
       // Update handle input
       if (profileElements.handleInput) {
         profileElements.handleInput.value = userData.handle || '';
@@ -1474,6 +1476,8 @@ async function main(){
       const userDoc = await usersRef.doc(currentUser.uid).get();
       const userData = userDoc.exists ? userDoc.data() : {};
       
+      // No dev flags persisted in UI; keep runtime clean
+
       // Update settings avatar
       if (profileElements.settingsAvatar) {
         const photoURL = userData.photoURL || '';
@@ -1507,12 +1511,17 @@ async function main(){
       } else {
         console.error('❌ renderCustomPingUI function NOT FOUND!');
       }
+
+      // Developer tools (per-account overrides)
+      // Dev Tools removed
       
       console.log('✅ Settings data loaded successfully');
     } catch (e) {
       console.error('Error loading settings data:', e);
     }
   }
+
+  // Dev tools UI removed
   
   // Load other profile data
   async function loadOtherProfileData(uid) {
@@ -4667,26 +4676,26 @@ startRequestsListeners(currentUser.uid);
   async function getUserDoc(uid){ const d=await usersRef.doc(uid).get(); return d.exists? d.data() : null; }
 
   let isSubmittingPing = false; // 🛡️ DUPLICATE PREVENTION: Lock flag
+  const localTTLByPingId = new Map(); try{ window.__localTTLByPingId = localTTLByPingId; }catch(_){ }
 
-  $('#submitPing').onclick=async()=>{
-    // 🛡️ Prevent duplicate submissions
-    if(isSubmittingPing) {
-      console.log('🚫 Ping submission already in progress');
-      return;
-    }
-    
+  function setSubmitButtonsDisabled(disabled){
+    try{ const btn=document.getElementById('submitPing'); if(btn) btn.disabled=disabled; }catch(_){ }
+  }
+
+  async function submitPingWithTTL(ttlHours){
+    if(isSubmittingPing){ console.log('🚫 Ping submission already in progress'); return; }
     try{
-      isSubmittingPing = true; // Lock
-      $('#submitPing').disabled = true; // Disable button visually
-      
+      isSubmittingPing = true;
+      setSubmitButtonsDisabled(true);
+
       if(!currentUser) return showToast('Sign in first');
       if(currentUser.isAnonymous) return showToast("Guests can't post. Create an account.");
       const udoc = await getUserDoc(currentUser.uid) || {};
       const lastAt = udoc.lastPingAt?.toDate ? udoc.lastPingAt.toDate().getTime() : 0;
       if(!isUnlimited()){
-      if(Date.now()-lastAt < MIN_MILLIS_BETWEEN_PINGS) return showToast('Slow down—try again in a few minutes');
-      const used=await refreshQuota(currentUser.uid);
-      if(used>=MAX_PINGS_PER_DAY) return showToast('Daily limit reached');
+        if(Date.now()-lastAt < MIN_MILLIS_BETWEEN_PINGS) return showToast('Slow down—try again in a few minutes');
+        const used=await refreshQuota(currentUser.uid);
+        if(used>=MAX_PINGS_PER_DAY) return showToast('Daily limit reached');
       } else {
         await refreshQuota(currentUser.uid);
       }
@@ -4702,104 +4711,98 @@ startRequestsListeners(currentUser.uid);
       if(mediaFile){
         const isVideo = (mediaFile.type||'').startsWith('video/');
         const isImage = (mediaFile.type||'').startsWith('image/');
-        
         if(isImage){
           if(mediaFile.size > 10*1024*1024) return showToast('Image must be ≤ 10MB');
-          
-          // Analyze image for NSFW content before upload
           showModerationLoading('Analyzing image...');
-          try {
+          try{
             const analysis = await analyzeImageFromFile(mediaFile);
             hideModerationLoading();
-            if (analysis.isNSFW) {
-              return blockUploadForNSFW(`inappropriate content detected (confidence: ${Math.round(analysis.confidence * 100)}%)`);
-            }
-          imageUrl = await uploadPingImage(mediaFile, currentUser.uid);
-          } catch (error) {
-            hideModerationLoading();
-            console.error('Error analyzing image:', error);
-            // If analysis fails, allow upload to proceed
+            if(analysis.isNSFW){ return blockUploadForNSFW(`inappropriate content detected (confidence: ${Math.round(analysis.confidence*100)}%)`); }
             imageUrl = await uploadPingImage(mediaFile, currentUser.uid);
-          }
+          }catch(error){ hideModerationLoading(); console.error('Error analyzing image:', error); imageUrl = await uploadPingImage(mediaFile, currentUser.uid); }
         } else if(isVideo){
           if(mediaFile.size > 50*1024*1024) return showToast('Video must be ≤ 50MB');
-          
-          // Analyze video for NSFW content before upload
           showModerationLoading('Analyzing video...');
-          try {
+          try{
             const analysis = await analyzeVideoFromFile(mediaFile);
             hideModerationLoading();
-            if (analysis.isNSFW) {
-              return blockUploadForNSFW(`inappropriate content detected (confidence: ${Math.round(analysis.confidence * 100)}%)`);
-            }
+            if(analysis.isNSFW){ return blockUploadForNSFW(`inappropriate content detected (confidence: ${Math.round(analysis.confidence*100)}%)`); }
             videoUrl = await uploadPingVideo(mediaFile, currentUser.uid);
-          } catch (error) {
-            hideModerationLoading();
-            console.error('Error analyzing video:', error);
-            // If analysis fails, allow upload to proceed
-          videoUrl = await uploadPingVideo(mediaFile, currentUser.uid);
-          }
+          }catch(error){ hideModerationLoading(); console.error('Error analyzing video:', error); videoUrl = await uploadPingVideo(mediaFile, currentUser.uid); }
         }
       }
 
       const visibility = (pingVisibility && pingVisibility.value==='private') ? 'private' : 'public';
-      
-      // 🔒 SECURITY: Use Cloud Function for secure ping creation with server-side validation
       console.log('🔒 Creating ping via secure Cloud Function...');
-      
       const result = await createPingSecure({
         text,
         lat,
         lon,
         visibility,
         imageUrl: imageUrl || null,
-        videoUrl: videoUrl || null
+        videoUrl: videoUrl || null,
+        ttlHours: Number(ttlHours)||24
       });
-      
-      if(!result || !result.success || !result.pingId) {
-        throw new Error('Failed to create ping');
-      }
-      
+      if(!result || !result.success || !result.pingId) throw new Error('Failed to create ping');
       const pingId = result.pingId;
       console.log('✅ Ping created securely:', pingId);
 
-      // Refresh local cache
-      const temp = { 
-        id: pingId, 
-        text, 
-        lat, 
-        lon, 
-        createdAt: {toDate: () => new Date()}, 
-        uid: currentUser.uid,
-        authorId: currentUser.uid,
-        visibility, 
-        imageUrl, 
-        videoUrl,
-        reactions: {},
-        commentCount: 0
-      };
-      lastPingCache.set(pingId, temp); 
+      const localCreatedAt = new Date();
+      const localTTL = Number(ttlHours)||24;
+      const localExpiresAt = new Date(localCreatedAt.getTime() + localTTL*60*60*1000);
+      const temp = { id: pingId, text, lat, lon, createdAt: {toDate: () => localCreatedAt}, expiresAt: {toDate: () => localExpiresAt}, ttlHours: localTTL, uid: currentUser.uid, authorId: currentUser.uid, visibility, imageUrl, videoUrl, reactions: {}, commentCount: 0 };
+      lastPingCache.set(pingId, temp);
+      try{ localTTLByPingId.set(pingId, localTTL); }catch(_){ }
       upsertMarker(temp);
 
-      closeModal('createModal'); 
-      $('#pingText').value=''; 
-      $('#lat').value=''; 
-      $('#lon').value=''; 
-      if(attachInput) attachInput.value='';
-      if(attachPreview) attachPreview.style.display = 'none';
-      if(attachVideoPreview) attachVideoPreview.style.display = 'none';
-      
+      closeModal('createModal'); $('#pingText').value=''; $('#lat').value=''; $('#lon').value=''; if(attachInput) attachInput.value=''; if(attachPreview) attachPreview.style.display='none'; if(attachVideoPreview) attachVideoPreview.style.display='none';
       await refreshQuota(currentUser.uid);
       showToast('Ping posted', 'success');
-    }catch(e){ 
-      console.error(e); 
-      showToast((e.code||'error')+': '+(e.message||'Error posting')); 
-    } finally {
-      // 🛡️ Always release lock, even on error
-      isSubmittingPing = false;
-      $('#submitPing').disabled = false;
-    }
-  };
+    }catch(e){ console.error(e); showToast((e.code||'error')+': '+(e.message||'Error posting')); }
+    finally{ isSubmittingPing=false; setSubmitButtonsDisabled(false); }
+  }
+
+  // TTL segmented control
+  let selectedTTL = 24;
+  const ttlSeg = document.getElementById('ttlSeg');
+  if(ttlSeg){
+    ttlSeg.addEventListener('click', (e)=>{
+      const btn = e.target && e.target.closest('button');
+      if(!btn) return;
+      const ttl = Number(btn.getAttribute('data-ttl')) || 24;
+      selectedTTL = ttl;
+      // Toggle active state
+      const all = ttlSeg.querySelectorAll('button');
+      all.forEach(b=> b.classList.toggle('active', b===btn));
+    });
+  }
+
+  const submitBtn = document.getElementById('submitPing');
+  if(submitBtn){ submitBtn.onclick = ()=> submitPingWithTTL(selectedTTL); }
+
+  // Helper: determine TTL from ping document
+  function getPingTTLHours(p){
+    const allowed = [2,12,24];
+    try{ if(p && p.id && localTTLByPingId.has(p.id)) return localTTLByPingId.get(p.id); }catch(_){ }
+    const direct = Number(p && p.ttlHours);
+    if(Number.isFinite(direct) && allowed.includes(direct)) return direct;
+    try{
+      const cMs = p && p.createdAt && p.createdAt.toDate ? p.createdAt.toDate().getTime() : null;
+      const eMs = p && p.expiresAt && p.expiresAt.toDate ? p.expiresAt.toDate().getTime() : null;
+      if(cMs && eMs){
+        const diffH = Math.round((eMs - cMs) / (60*60*1000));
+        let closest=24, best=Infinity; for(const v of allowed){ const d=Math.abs(v-diffH); if(d<best){best=d; closest=v;} }
+        return closest;
+      }
+      if(eMs){
+        const remH = Math.ceil((eMs - Date.now()) / (60*60*1000));
+        if(remH <= 2) return 2;
+        if(remH <= 12) return 12;
+        return 24;
+      }
+    }catch(_){ }
+    return 24;
+  }
 
   /* --------- Sheet / votes / comments / reports --------- */
   const sheet=$('#pingSheet'), sheetText=$('#sheetText'), sheetMeta=$('#sheetMeta');
@@ -4906,6 +4909,8 @@ startRequestsListeners(currentUser.uid);
             parts.push(distTxt);
           }
         }catch(_){ }
+        // TTL label (2/12/24 hr)
+        try{ const ttl = getPingTTLHours(p); parts.push(`${ttl} hr`); }catch(_){ parts.push('24 hr'); }
         parts.push(timeAgo(created));
         sheetMeta.textContent = parts.join(' • ');
       })();

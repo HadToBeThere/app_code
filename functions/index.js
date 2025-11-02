@@ -126,8 +126,9 @@ exports.createPing = functions.https.onCall(async (data, context) => {
     // 3. Rate limiting - Check last ping time
     const lastPingAt = userData.lastPingAt?.toMillis ? userData.lastPingAt.toMillis() : 0;
     const timeSinceLastPing = Date.now() - lastPingAt;
+    const noCooldown = userData.devNoCooldown === true || isSub === true;
     
-    if (timeSinceLastPing < CONFIG.MIN_MILLIS_BETWEEN_PINGS) {
+    if (!noCooldown && timeSinceLastPing < CONFIG.MIN_MILLIS_BETWEEN_PINGS) {
       const minutesLeft = Math.ceil((CONFIG.MIN_MILLIS_BETWEEN_PINGS - timeSinceLastPing) / 60000);
       throw new functions.https.HttpsError(
         'resource-exhausted', 
@@ -140,14 +141,19 @@ exports.createPing = functions.https.onCall(async (data, context) => {
       const today = getTodayString();
       const quotaDoc = await db.collection('users').doc(uid).collection('quota').doc(today).get();
       const used = quotaDoc.exists ? (quotaDoc.data().used || 0) : 0;
-      
-      if (used >= CONFIG.MAX_PINGS_PER_DAY) {
-        throw new functions.https.HttpsError('resource-exhausted', 'Daily ping limit reached');
+      // Per-user max override
+      const perUserMax = Number(userData.maxPingsPerDay);
+      const maxAllowed = Number.isFinite(perUserMax) && perUserMax > 0 ? perUserMax : CONFIG.MAX_PINGS_PER_DAY;
+      if (used >= maxAllowed) {
+        throw new functions.https.HttpsError('resource-exhausted', `Daily ping limit reached (${maxAllowed}/day)`);
       }
     }
     
     // 5. Input validation
     const { text, lat, lon, visibility, imageUrl, videoUrl, customPinUrl } = data;
+    const ttlRaw = Number(data.ttlHours);
+    const ALLOWED_TTLS = [2, 12, 24];
+    const ttlHours = ALLOWED_TTLS.includes(ttlRaw) ? ttlRaw : CONFIG.PING_EXPIRY_HOURS;
     
     // Validate text
     if (!text || typeof text !== 'string') {
@@ -190,6 +196,7 @@ exports.createPing = functions.https.onCall(async (data, context) => {
     // 8. Create ping document
     const pingRef = db.collection('pings').doc();
     const now = FieldValue.serverTimestamp();
+    const expiresAtTs = Timestamp.fromDate(new Date(Date.now() + ttlHours * 60 * 60 * 1000));
     
     const pingData = {
       authorId: uid, // Use authorId for compatibility with existing app code
@@ -201,6 +208,8 @@ exports.createPing = functions.https.onCall(async (data, context) => {
       videoUrl: videoUrl || null,
       customPinUrl: (isSub && customPinUrl) ? customPinUrl : null,
       createdAt: now,
+      expiresAt: expiresAtTs,
+      ttlHours,
       likes: 0,
       dislikes: 0,
       flags: 0,
@@ -702,42 +711,44 @@ exports.cleanupExpiredPings = functions.pubsub
   .schedule('every 1 hours')
   .onRun(async (context) => {
     try {
+      const now = new Date();
       const cutoffTime = new Date(Date.now() - CONFIG.PING_EXPIRY_HOURS * 60 * 60 * 1000);
       const cutoffTimestamp = Timestamp.fromDate(cutoffTime);
-      
-      console.log(`🧹 Cleaning up pings older than ${cutoffTime.toISOString()}`);
-      
-      // Query expired pings
-      const expiredQuery = await db.collection('pings')
-        .where('createdAt', '<', cutoffTimestamp)
-        .limit(500) // Batch size
+      const nowTs = Timestamp.fromDate(now);
+
+      console.log(`🧹 Cleaning up pings. Now=${now.toISOString()} fallbackCutoff(24h)=${cutoffTime.toISOString()}`);
+
+      let totalDeleted = 0;
+
+      // Pass 1: TTL-based expiry (expiresAt < now)
+      const ttlExpired = await db.collection('pings')
+        .where('expiresAt', '<', nowTs)
+        .limit(500)
         .get();
-      
-      if (expiredQuery.empty) {
-        console.log('No expired pings to clean up');
-        return null;
-      }
-      
-      // Delete in batch
-      const batch = db.batch();
-      let deleteCount = 0;
-      
-      for (const doc of expiredQuery.docs) {
-        batch.delete(doc.ref);
-        deleteCount++;
-        
-        // TODO: Also delete associated media from Storage
-        const pingData = doc.data();
-        if (pingData.imageUrl || pingData.videoUrl) {
-          // Schedule storage cleanup
-          // This would need a separate function to handle storage deletion
+      if (!ttlExpired.empty) {
+        const batch1 = db.batch();
+        for (const doc of ttlExpired.docs) {
+          batch1.delete(doc.ref);
+          totalDeleted++;
         }
+        await batch1.commit();
       }
-      
-      await batch.commit();
-      
-      console.log(`✅ Deleted ${deleteCount} expired pings`);
-      
+
+      // Pass 2: Legacy pings without expiresAt — fallback to 24h createdAt cutoff
+      const legacyExpired = await db.collection('pings')
+        .where('createdAt', '<', cutoffTimestamp)
+        .limit(500)
+        .get();
+      if (!legacyExpired.empty) {
+        const batch2 = db.batch();
+        for (const doc of legacyExpired.docs) {
+          batch2.delete(doc.ref);
+          totalDeleted++;
+        }
+        await batch2.commit();
+      }
+
+      console.log(`✅ Deleted ${totalDeleted} expired pings`);
       return null;
     } catch (error) {
       console.error('Error cleaning up expired pings:', error);

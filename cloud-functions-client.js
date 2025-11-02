@@ -40,7 +40,8 @@ async function createPingSecure(data) {
       visibility: data.visibility || 'public',
       imageUrl: data.imageUrl || null,
       videoUrl: data.videoUrl || null,
-      customPinUrl: data.customPinUrl || null
+      customPinUrl: data.customPinUrl || null,
+      ttlHours: data.ttlHours || 24
     });
     
     return result.data;
