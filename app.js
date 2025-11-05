@@ -3402,7 +3402,17 @@ startRequestsListeners(currentUser.uid);
   });
 
   /* --------- Pin icons & sizing --------- */
-  function netLikes(p){ return Math.max(0, (p.likes||0) - (p.dislikes||0)); }
+  function netLikes(p){
+    try{
+      const reactions = p && p.reactions ? p.reactions : {};
+      let likes=0, dislikes=0, sawAny=false;
+      Object.values(reactions).forEach(arr=>{
+        if(Array.isArray(arr) && arr.length){ sawAny=true; if(arr.includes('👍')) likes++; if(arr.includes('👎')) dislikes++; }
+      });
+      if(sawAny) return Math.max(0, likes - dislikes);
+    }catch(_){ }
+    return Math.max(0, (p && p.likes || 0) - (p && p.dislikes || 0));
+  }
   // Zoom scaling: double size every ~3 zooms; clamp to [0.7, 2.2]
   function zoomFactor(){
     try{
@@ -5107,15 +5117,30 @@ startRequestsListeners(currentUser.uid);
   async function renderVoteBar(p){
     reactBar.innerHTML='';
     const disabled = (!currentUser || currentUser.isAnonymous);
-    const mk=(type,label,count)=>{
+
+    // Derive counts from reactions map to stay in sync with backend
+    const reactions = p.reactions || {};
+    let likeCount = 0, dislikeCount = 0;
+    Object.values(reactions).forEach(arr=>{
+      if(Array.isArray(arr)){
+        if(arr.includes('👍')) likeCount++;
+        if(arr.includes('👎')) dislikeCount++;
+      }
+    });
+    const youReacted = reactions[currentUser?.uid] || [];
+    const youLike = Array.isArray(youReacted) && youReacted.includes('👍');
+    const youDislike = Array.isArray(youReacted) && youReacted.includes('👎');
+
+    const mk=(type,label,count,active)=>{
       const b=document.createElement('button'); b.className='react';
       const n = Number(count)||0; b.textContent = n>0 ? `${label} ${n}` : label;
+      if(active){ b.style.outline='2px solid #111'; b.style.outlineOffset='-2px'; }
       if(disabled){ b.disabled=true; b.style.opacity=.6; b.title='Sign in to react'; }
       else { b.onclick=()=>setVote(p.id,type).catch(console.error); }
       return b;
     };
-    reactBar.appendChild(mk('like','👍',p.likes)); 
-    reactBar.appendChild(mk('dislike','👎',p.dislikes));
+    reactBar.appendChild(mk('like','👍',likeCount,youLike)); 
+    reactBar.appendChild(mk('dislike','👎',dislikeCount,youDislike));
     
     // Show which friends reacted (optional)
     if(ENABLE_FRIEND_REACTIONS && currentUser && !currentUser.isAnonymous && myFriends && myFriends.size > 0){
@@ -5217,7 +5242,7 @@ startRequestsListeners(currentUser.uid);
     if(currentUser.isAnonymous) return showToast("Guests can't react");
     try{
       // Map legacy like/dislike to secure emoji reactions
-      const emoji = type === 'like' ? '👍' : '👀';
+      const emoji = type === 'like' ? '👍' : '👎';
       // 🔒 SECURITY: Use Cloud Function to toggle reaction
       const res = await toggleReactionSecure(pingId, emoji);
       if(!res || !res.success){ throw new Error('Failed to toggle reaction'); }
@@ -7169,8 +7194,8 @@ startRequestsListeners(currentUser.uid);
 
     // Sort by net likes desc, then by firstNetAt milestone
     eligiblePings.sort((a,b)=> {
-      const aNet = Math.max(0,(a.likes||0)-(a.dislikes||0));
-      const bNet = Math.max(0,(b.likes||0)-(b.dislikes||0));
+      const aNet = netLikes(a);
+      const bNet = netLikes(b);
       if(aNet !== bNet) return bNet - aNet;
       
       const N = aNet;
@@ -7190,7 +7215,7 @@ startRequestsListeners(currentUser.uid);
 
     // Check if we meet minimum threshold
     const topPing = eligiblePings[0];
-    const topNet = topPing ? Math.max(0, (topPing.likes||0)-(topPing.dislikes||0)) : 0;
+    const topNet = topPing ? netLikes(topPing) : 0;
     const meetsThreshold = (topNet >= POTW_MIN_NET_LIKES || eligiblePings.length >= POTW_MIN_COMPETITORS);
 
     // Elements
@@ -7230,7 +7255,7 @@ startRequestsListeners(currentUser.uid);
           }
           if(lastWeekMetaEl){
             const who = lastWeekChampion.authorName || 'Anon';
-            const net = Math.max(0, (lastWeekChampion.likes||0)-(lastWeekChampion.dislikes||0));
+          const net = netLikes(lastWeekChampion || {});
             lastWeekMetaEl.textContent = `${who} • ${net} likes`;
           }
         }
@@ -7253,7 +7278,7 @@ startRequestsListeners(currentUser.uid);
 
     const who = (currentPotw.authorName || 'Anon');
     const whoShort = who.length>20 ? (who.slice(0,20)+'…') : who;
-    const net = Math.max(0, (currentPotw.likes||0)-(currentPotw.dislikes||0));
+    const net = netLikes(currentPotw || {});
     potwMeta.textContent = `${whoShort} • ${net} likes`;
 
     try{
@@ -7315,8 +7340,8 @@ startRequestsListeners(currentUser.uid);
           
           const score = document.createElement('div');
           score.className = 'leaderboard-score';
-          const netLikes = Math.max(0, (ping.likes||0)-(ping.dislikes||0));
-          score.textContent = `${netLikes}★`;
+          const nl = netLikes(ping);
+          score.textContent = `${nl}★`;
           
           item.appendChild(rank);
           item.appendChild(info);
@@ -7367,9 +7392,9 @@ startRequestsListeners(currentUser.uid);
             
             const score = document.createElement('div');
             score.className = 'leaderboard-score';
-            const netLikes = Math.max(0, (userPing.likes||0)-(userPing.dislikes||0));
-            const deficit = eligiblePings[0] ? Math.max(0, (eligiblePings[0].likes||0)-(eligiblePings[0].dislikes||0)) - netLikes : 0;
-            score.textContent = `${netLikes}★`;
+            const nlUser = netLikes(userPing);
+            const deficit = eligiblePings[0] ? netLikes(eligiblePings[0]) - nlUser : 0;
+            score.textContent = `${nlUser}★`;
             score.title = deficit > 0 ? `${deficit} more to lead` : '';
             
             item.appendChild(rank);
@@ -7456,8 +7481,8 @@ startRequestsListeners(currentUser.uid);
 
   // Compare two pings for PotW using net likes, then "first to reach N" milestones (firstNetAt)
   function betterPotwCandidate(a,b){
-  const aNet = Math.max(0,(a.likes||0)-(a.dislikes||0));
-  const bNet = Math.max(0,(b.likes||0)-(b.dislikes||0));
+  const aNet = netLikes(a);
+  const bNet = netLikes(b);
 
   if(aNet !== bNet) return aNet > bNet ? a : b;
 
@@ -7542,7 +7567,7 @@ startRequestsListeners(currentUser.uid);
   eligible.sort((a,b)=> betterPotwCandidate(a,b) === a ? -1 : 1);
 
   const top = eligible[0] || null;
-  const topNet = top ? Math.max(0, (top.likes||0)-(top.dislikes||0)) : 0;
+  const topNet = top ? netLikes(top) : 0;
   const meetsThreshold = (topNet >= POTW_MIN_NET_LIKES || eligible.length >= POTW_MIN_COMPETITORS);
 
   const prev = currentPotw ? currentPotw.id : null;
@@ -7552,7 +7577,7 @@ startRequestsListeners(currentUser.uid);
     const name = await authorName(top.authorId);
     currentPotw = {
       id: top.id, text: top.text || '',
-      likes: top.likes||0, dislikes: top.dislikes||0,
+      likes: top.likes||0, dislikes: top.dislikes||0, net: netLikes(top),
       imageUrl: top.imageUrl||null, lat: top.lat, lon: top.lon,
       authorId: top.authorId, authorName: name,
       firstNetAt: top.firstNetAt || {}

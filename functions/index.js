@@ -357,7 +357,7 @@ exports.toggleReaction = functions.https.onCall(async (data, context) => {
     }
     
     // Validate emoji (basic check)
-    const validEmojis = ['👍', '❤️', '😂', '🔥', '👀'];
+    const validEmojis = ['👍', '👎', '❤️', '😂', '🔥', '👀'];
     if (!validEmojis.includes(emoji)) {
       throw new functions.https.HttpsError('invalid-argument', 'Invalid emoji');
     }
