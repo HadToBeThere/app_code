@@ -369,21 +369,28 @@ exports.toggleReaction = functions.https.onCall(async (data, context) => {
       throw new functions.https.HttpsError('not-found', 'Ping not found');
     }
     
-    // Use transaction to safely toggle reaction
+    // Use transaction to safely toggle reaction with mutual exclusion for 👍/👎
     await db.runTransaction(async (transaction) => {
       const freshDoc = await transaction.get(pingRef);
       const reactions = freshDoc.data().reactions || {};
-      const userReactions = reactions[uid] || [];
-      
-      let newUserReactions;
+      const userReactions = Array.isArray(reactions[uid]) ? reactions[uid] : [];
+
+      let newUserReactions = userReactions.slice();
+
       if (userReactions.includes(emoji)) {
-        // Remove reaction
+        // Toggle off the same reaction
         newUserReactions = userReactions.filter(e => e !== emoji);
       } else {
-        // Add reaction
-        newUserReactions = [...userReactions, emoji];
+        // Add this reaction
+        newUserReactions = userReactions.filter(e => {
+          // Enforce mutual exclusivity between like/dislike
+          if (emoji === '👍') return e !== '👎';
+          if (emoji === '👎') return e !== '👍';
+          return true;
+        });
+        newUserReactions.push(emoji);
       }
-      
+
       const newReactions = { ...reactions, [uid]: newUserReactions };
       transaction.update(pingRef, { reactions: newReactions });
     });

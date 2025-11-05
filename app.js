@@ -1662,7 +1662,7 @@ async function main(){
   const MIN_MILLIS_BETWEEN_PINGS = 5*60*1000; // 5 minutes
   const LIVE_WINDOW_MS = 24*3600*1000;
   // Dev/test: unlimited ping whitelist by email
-  const UNLIMITED_EMAILS = new Set(['tobias.dicker@mail.mcgill.ca']);
+  const UNLIMITED_EMAILS = new Set(['tobias.dicker@mail.mcgill.ca', 'samkn52@gmail.com']);
 
   // Size curve constants
   const BASE_RADIUS = 10;                 // px at 0 net likes
@@ -6449,15 +6449,29 @@ startRequestsListeners(currentUser.uid);
         if(!ownedFlag && t.tier!==0){ btn.onclick = async ()=>{
           try{
             await db.runTransaction(async tx=>{
-              const ref=usersRef.doc(currentUser.uid); const s=await tx.get(ref); const prev=s.exists? Number(s.data().points||0):0; if(prev < price) throw new Error('insufficient');
-              const now=firebase.firestore.FieldValue.serverTimestamp();
-              const ownedNext=Object.assign({}, s.exists? (s.data().ownedPings||{}):{}); ownedNext[t.tier]=true;
-              tx.set(ref,{ points: prev-price, ownedPings: ownedNext, selectedPingTier:t.tier },{merge:true});
-              tx.set(ref.collection('ledger').doc(), { ts:now, type:'unlock_ping', amount:price, tier:t.tier });
+              const ref=usersRef.doc(currentUser.uid); const s=await tx.get(ref);
+              const data = s.exists ? s.data() : {};
+              const prev = Number(data.points || 0);
+              console.log(`[Unlock Debug] User has ${prev} PPs, skin costs ${price} PPs`);
+              if(prev < price) {
+                console.error(`[Unlock Debug] Insufficient: ${prev} < ${price}`);
+                throw new Error(`insufficient: have ${prev}, need ${price}`);
+              }
+              const ownedNext=Object.assign({}, data.ownedPings || {}, { [t.tier]: true });
+              const update = { ownedPings: ownedNext, selectedPingTier:t.tier, points: prev - price };
+              console.log(`[Unlock Debug] Deducting ${price} PPs, new balance: ${prev - price}`);
+              tx.set(ref, update,{merge:true});
+              // Ledger writes removed - blocked by security rules (ledger is Cloud Function only)
             });
             showToast('Unlocked','success');
             renderCustomPingUI();
-          }catch(e){ if(String(e&&e.message||'').includes('insufficient')) showToast('Not enough PPs','error'); else { console.error(e); showToast('Unlock failed','error'); } }
+            try{ userDocCache.delete(currentUser.uid); }catch(_){}
+            try{ restyleMarkers(); }catch(_){}
+          }catch(e){ 
+            console.error('[Unlock Error]', e);
+            if(String(e&&e.message||'').includes('insufficient')) showToast(e.message || 'Not enough PPs','error'); 
+            else { console.error(e); showToast('Unlock failed','error'); } 
+          }
         }; } else {
           btn.onclick = async ()=>{ try{ await usersRef.doc(currentUser.uid).set({ selectedPingTier:t.tier }, { merge:true }); showToast('Selected','success'); renderCustomPingUI(); try{ userDocCache.delete(currentUser.uid); }catch(_){ } try{ restyleMarkers(); }catch(_){ } }catch(_){ showToast('Select failed','error'); } };
         }
