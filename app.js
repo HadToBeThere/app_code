@@ -4729,7 +4729,18 @@ startRequestsListeners(currentUser.uid);
     openModal('createModal');
   });
 
-  function validText(s){ if(!s) return false; if(/\b[A-Z][a-z]+\s+[A-Z][a-z]+\b/.test(s)) return false; return true; }
+  function validText(s){ 
+    if(!s) return false; 
+    // Only block patterns that look like full names (both words 2-15 chars, not common words)
+    const namePattern = /\b[A-Z][a-z]{1,14}\s+[A-Z][a-z]{1,14}\b/;
+    if(namePattern.test(s)) {
+      // Allow common word pairs that aren't names
+      const commonWords = ['French Test', 'English Class', 'Math Quiz', 'Science Lab', 'Test Soon', 'Good Morning', 'Happy Birthday'];
+      const hasCommonPhrase = commonWords.some(phrase => s.includes(phrase));
+      if(!hasCommonPhrase) return false;
+    }
+    return true; 
+  }
   async function getUserDoc(uid){ const d=await usersRef.doc(uid).get(); return d.exists? d.data() : null; }
 
   let isSubmittingPing = false; // 🛡️ DUPLICATE PREVENTION: Lock flag
