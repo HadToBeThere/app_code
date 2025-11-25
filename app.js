@@ -1682,16 +1682,12 @@ async function main(){
   const POTW_REWARD_PP = 100;         // PP reward for winning PotW
 
   /* --------- Firebase --------- */
-  const firebaseConfig = {
-    apiKey: "AIzaSyBpxljomYywVNB_v126yM1FFzaS_n_PaDA",
-    authDomain: "had-to-be-there-18cd7.firebaseapp.com",
-    projectId: "had-to-be-there-18cd7",
-    storageBucket: "had-to-be-there-18cd7.appspot.com",
-    messagingSenderId: "162997813310",
-    appId: "1:162997813310:web:e27cf250f1f516d759916f",
-    measurementId: "G-H4X4ENJ3FJ"
-  };
-  firebase.initializeApp(firebaseConfig);
+  // Firebase config is now loaded from config.js (not committed to git)
+  if (typeof window.firebaseConfig === 'undefined') {
+    console.error('⚠️ Firebase config not found! Please create config.js from config.example.js');
+    throw new Error('Firebase configuration missing. See config.example.js for setup instructions.');
+  }
+  firebase.initializeApp(window.firebaseConfig);
   const auth = firebase.auth();
   const db   = firebase.firestore();
   // Ensure session persists across reloads
@@ -4987,7 +4983,7 @@ startRequestsListeners(currentUser.uid);
             delBtn.onclick = async ()=>{
               try{
                 if(!confirm('Delete this ping?')) return;
-                await pingsRef.doc(p.id).set({ status:'deleted', deletedAt: firebase.firestore.FieldValue.serverTimestamp() }, { merge:true });
+                await pingsRef.doc(p.id).delete();
                 showToast('Ping deleted');
                 sheet.classList.remove('open'); applyModalOpenClass();
               }catch(e){ console.error(e); showToast('Delete failed'); }
@@ -5579,61 +5575,14 @@ startRequestsListeners(currentUser.uid);
   }
 
   // ---- Friend requests ----
-  async function sendFriendRequest(fromUid, toUid){
-    // spam guard: limit 20/day
-    const since = Date.now() - 24*3600*1000;
-    const q = await db.collection('friendRequests').where('from','==',fromUid).where('createdAt','>=', new Date(since)).get().catch(()=>null);
-    if(q && q.size>=20) throw new Error('limit');
-
-    const reqId = fromUid+'_'+toUid;
-    const myDoc = await db.collection('friendRequests').doc(reqId).get();
-    if(myDoc.exists){
-      const st = (myDoc.data().status||'pending');
-      if(st==='pending') throw new Error('already pending');
-      if(st==='accepted'){
-        // Check real friend state; if removed, reset to pending
-        const [a,b] = await Promise.all([usersRef.doc(fromUid).get(), usersRef.doc(toUid).get()]);
-        const aHas = a.exists && Array.isArray(a.data().friendIds) && a.data().friendIds.includes(toUid);
-        const bHas = b.exists && Array.isArray(b.data().friendIds) && b.data().friendIds.includes(fromUid);
-        if(aHas && bHas){ throw new Error('already friends'); }
-        // Stale accepted doc — overwrite as pending
-        await db.collection('friendRequests').doc(reqId).set({ from: fromUid, to: toUid, status:'pending', createdAt: firebase.firestore.FieldValue.serverTimestamp() }, { merge:true });
-      }
-    }
-
-    // Cross-request auto-accept
-    const cross = await db.collection('friendRequests').doc(toUid+'_'+fromUid).get();
-    if(cross.exists && (cross.data().status||'pending')==='pending'){
-      // Accept
-      await db.runTransaction(async (tx)=>{
-        const aRef = usersRef.doc(fromUid), bRef = usersRef.doc(toUid);
-        tx.update(aRef, { friendIds: firebase.firestore.FieldValue.arrayUnion(toUid) });
-        tx.update(bRef, { friendIds: firebase.firestore.FieldValue.arrayUnion(fromUid) });
-        tx.set(db.collection('friendRequests').doc(toUid+'_'+fromUid), { status:'accepted', acceptedAt: firebase.firestore.FieldValue.serverTimestamp() }, { merge:true });
-      });
-      // Notify both (dedupe)
-      try{
-        await Promise.all([
-          db.runTransaction(async tx=>{ const nref=usersRef.doc(fromUid).collection('notifications').doc('friend_accept_'+toUid); const snap=await tx.get(nref); if(!snap.exists){ tx.set(nref,{ type:'friend_accept', partner: toUid, createdAt: firebase.firestore.FieldValue.serverTimestamp() }); } }),
-          db.runTransaction(async tx=>{ const nref=usersRef.doc(toUid).collection('notifications').doc('friend_accept_'+fromUid); const snap=await tx.get(nref); if(!snap.exists){ tx.set(nref,{ type:'friend_accept', partner: fromUid, createdAt: firebase.firestore.FieldValue.serverTimestamp() }); } })
-        ]);
-      }catch(_){ }
+  async function sendFriendRequest(_fromUid, toUid){
+    if(!currentUser) throw new Error('Sign in first');
+    if(!toUid) throw new Error('No recipient');
+    const result = await sendFriendRequestSecure({ targetUid: toUid });
+    if(result && result.autoAccepted){
+      showToast('Friend added', 'success');
       await refreshFriends();
-      return;
     }
-
-    // Create pending request (dedupe by id)
-    await db.collection('friendRequests').doc(fromUid+'_'+toUid).set({
-      from: fromUid, to: toUid, status:'pending', createdAt: firebase.firestore.FieldValue.serverTimestamp()
-    });
-    // Notify recipient (dedupe via fixed doc id)
-    try{
-      await db.runTransaction(async tx=>{
-        const nref = usersRef.doc(toUid).collection('notifications').doc('friend_req_'+fromUid);
-        const snap = await tx.get(nref);
-        if(!snap.exists){ tx.set(nref,{ type:'friend_req', from: fromUid, createdAt: firebase.firestore.FieldValue.serverTimestamp() }); }
-      });
-    }catch(_){ }
   }
 
   async function acceptFriendRequest(reqId){
@@ -5673,12 +5622,7 @@ startRequestsListeners(currentUser.uid);
     }
   }
   async function cancelFriendRequest(reqId){
-    const rRef = db.collection('friendRequests').doc(reqId);
-    const doc = await rRef.get(); if(!doc.exists) return;
-    if(doc.data().from!==currentUser.uid) throw new Error('not sender');
-    await rRef.set({ status:'canceled', decidedAt: firebase.firestore.FieldValue.serverTimestamp() }, { merge:true });
-    // Clean up reverse pending request
-    try{ const [a,b]=reqId.split('_'); const rev=db.collection('friendRequests').doc(b+'_'+a); const d=await rev.get(); if(d.exists && (d.data().status||'pending')!=='accepted'){ await rev.delete(); } }catch(_){ }
+    await cancelFriendRequestSecure(reqId);
   }
 
   // Requests UI (Profile modal)
@@ -6071,7 +6015,7 @@ startRequestsListeners(currentUser.uid);
         // 🔒 RATE LIMITING: Check if user has exceeded daily report limit
         const today = dateKey(montrealNow());
         const reportsToday = await db.collection('reports')
-          .where('reporterId', '==', currentUser.uid)
+          .where('reportedBy', '==', currentUser.uid)
           .where('date', '==', today)
           .get();
         
@@ -6081,9 +6025,8 @@ startRequestsListeners(currentUser.uid);
         
         // 🚫 DUPLICATE CHECK: Check if user already reported this ping
         const existingReport = await db.collection('reports')
-          .where('reporterId', '==', currentUser.uid)
-          .where('contentId', '==', pingId)
-          .where('contentType', '==', 'ping')
+          .where('reportedBy', '==', currentUser.uid)
+          .where('pingId', '==', pingId)
           .get();
         
         if(!existingReport.empty) {
@@ -6092,11 +6035,12 @@ startRequestsListeners(currentUser.uid);
         
         // Submit report
         await db.collection('reports').add({
-          reporterId: currentUser.uid,
-          contentId: pingId,
+          reportedBy: currentUser.uid,
+          pingId,
+          reason: category,
+          category,
+          details,
           contentType: 'ping',
-          category: category,
-          details: details,
           date: today,
           createdAt: firebase.firestore.FieldValue.serverTimestamp(),
           status: 'pending'
@@ -6130,22 +6074,10 @@ startRequestsListeners(currentUser.uid);
       if(!targetUid) return showToast('No such user','error');
       if(targetUid===currentUser.uid) return showToast('You cannot gift yourself','warning');
       if(!myFriends || !myFriends.has(targetUid)) return showToast('Only gift to friends','warning');
-      await db.runTransaction(async tx=>{
-        const fromRef=usersRef.doc(currentUser.uid); const toRef=usersRef.doc(targetUid);
-        const [fromSnap,toSnap]=await Promise.all([tx.get(fromRef), tx.get(toRef)]);
-        const fromPts = Math.max(0, Number(fromSnap.exists? fromSnap.data().points||0 : 0));
-        if(fromPts < amt) throw new Error('insufficient');
-        tx.set(fromRef, { points: fromPts - amt }, { merge:true });
-        const toPts = Math.max(0, Number(toSnap.exists? toSnap.data().points||0 : 0));
-        tx.set(toRef, { points: toPts + amt }, { merge:true });
-        // Ledger entries
-        const now=firebase.firestore.FieldValue.serverTimestamp();
-        tx.set(fromRef.collection('ledger').doc(), { ts:now, type:'gift_out', amount:amt, to:targetUid });
-        tx.set(toRef.collection('ledger').doc(), { ts:now, type:'gift_in', amount:amt, from:currentUser.uid });
-      });
+      await giftPointsSecure({ targetUid, amount: amt });
       showToast(`Gifted ${amt} PPs`,'success');
       closeModal('giftModal');
-    }catch(e){ if(String(e&&e.message||'').includes('insufficient')) showToast('Not enough PPs','error'); else { console.error(e); showToast('Gift failed','error'); } }
+    }catch(e){ if(/not enough/i.test(String(e&&e.message||''))) showToast('Not enough PPs','error'); else { console.error(e); showToast(e.message || 'Gift failed','error'); } }
   }; }
 
   // Autosuggest for Gift PPs friend input (friends-only)
@@ -6805,28 +6737,15 @@ startRequestsListeners(currentUser.uid);
       row.innerHTML=`<div><strong>${fr.name}</strong></div>`;
       const rm=document.createElement('button'); rm.className='btn'; rm.textContent='Remove';
       rm.onclick=async(e)=>{ 
-        e.stopPropagation(); 
-        await usersRef.doc(currentUser.uid).set({ friendIds: firebase.firestore.FieldValue.arrayRemove(fr.fid) },{merge:true}); 
-        await usersRef.doc(fr.fid).set({ friendIds: firebase.firestore.FieldValue.arrayRemove(currentUser.uid) },{merge:true});
-        // Clean up any accepted/pending request docs between these two users
-        try {
-          const ids=[currentUser.uid, fr.fid];
-          const pair=[ids[0]+'_'+ids[1], ids[1]+'_'+ids[0]];
-          for(const id of pair){
-            const r= db.collection('friendRequests').doc(id);
-            const rd=await r.get();
-            if(rd.exists){
-              const st=rd.data().status||'pending';
-              if(st!=='accepted'){
-                await r.delete();
-              } else {
-                await r.set({ status:'canceled', decidedAt: firebase.firestore.FieldValue.serverTimestamp() }, { merge:true });
-              }
-            }
-          }
-        } catch(_) { }
-        showToast('Removed'); 
-        refreshFriends(); 
+        e.stopPropagation();
+        try{
+          await removeFriendSecure(fr.fid);
+          showToast('Removed','success');
+          await refreshFriends();
+        }catch(err){
+          console.error(err);
+          showToast(err.message || 'Remove failed','error');
+        }
       };
       row.appendChild(rm); frag.appendChild(row);
     }
@@ -7031,6 +6950,17 @@ startRequestsListeners(currentUser.uid);
           notifsContent.appendChild(line);
           } else if(n.type==='friend_removed'){
             line.textContent = 'You were removed as a friend.';
+          notifsContent.appendChild(line);
+          } else if(n.type==='gift_received'){
+            line.className='notif';
+            const amount = Number(n.amount||0);
+            line.textContent = `🎁 You received ${amount} PPs`;
+            (async ()=>{
+              try{
+                const handle = await getHandleForUid(n.fromUid);
+                line.textContent = `🎁 ${handle} sent you ${amount} PPs`;
+              }catch(_){}
+            })();
           notifsContent.appendChild(line);
           } else if(n.type==='mention'){
             // Mention notification - clickable to view ping

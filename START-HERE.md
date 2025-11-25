@@ -26,12 +26,22 @@
 
 ## 🚀 Quick Start
 
-### Deploy
+### 1. First-Time Setup (Required)
+**Create your configuration file:**
+```bash
+cp config.example.js config.js
+```
+Then edit `config.js` with your Firebase credentials from:
+https://console.firebase.google.com/project/had-to-be-there-18cd7/settings/general
+
+⚠️ **Important**: `config.js` contains your private API keys and is **NOT** committed to git. This makes the repository safe to share publicly.
+
+### 2. Deploy
 ```bash
 firebase deploy
 ```
 
-### Local Development
+### 3. Local Development
 ```bash
 firebase emulators:start
 ```
@@ -98,6 +108,8 @@ Firestore (data) + Storage (media)
 | File | Purpose |
 |------|---------|
 | `app.js` | Main application logic |
+| `config.js` | **Firebase API keys (private, not in git)** |
+| `config.example.js` | Configuration template (safe to commit) |
 | `index_1-2.html` | HTML structure |
 | `app.css` | Styling |
 | `cloud-functions-client.js` | Cloud Function wrappers |

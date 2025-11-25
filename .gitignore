@@ -3,6 +3,9 @@
 .env.local
 .env.*.local
 
+# Configuration files with API keys
+config.js
+
 # Firebase
 .firebase/
 firebase-debug.log
