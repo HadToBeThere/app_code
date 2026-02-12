@@ -1,1229 +1,4 @@
 async function main(){
-  /* --------- NSFW Content Moderation System --------- */
-  let nsfwModel = null;
-  let moderationReady = false;
-  
-  // Initialize enhanced heuristic moderation system
-  async function initializeModeration() {
-    try {
-      console.log('🚀 Initializing enhanced content moderation system...');
-      
-      // Skip NSFW.js model loading entirely - use enhanced heuristics directly
-      // This is more reliable and aggressive than the NSFW.js model
-      console.log('🛡️ Using enhanced heuristic moderation system');
-      console.log('📊 Features: 6 skin tone detection algorithms, weighted scoring, 10% threshold');
-      
-      moderationReady = true;
-      nsfwModel = null; // We'll use heuristics instead
-      
-      console.log('✅ Enhanced content moderation system ready');
-      console.log('🎯 System will block inappropriate content with 10% confidence threshold');
-      
-    } catch (error) {
-      console.error('❌ Failed to initialize moderation system:', error);
-      
-      // Even if something goes wrong, still enable basic moderation
-      console.log('🔄 Enabling basic moderation as final fallback');
-      moderationReady = true;
-      nsfwModel = null;
-    }
-  }
-  
-  // Analyze image for NSFW content using NSFW.js
-  async function analyzeImage(imageElement) {
-    if (!moderationReady) {
-      console.log('Moderation not ready, allowing image');
-      return { isNSFW: false, confidence: 0, predictions: [] };
-    }
-    
-    try {
-      if (nsfwModel) {
-        // Use NSFW.js model for analysis
-        return await analyzeImageWithNSFWJS(imageElement);
-      } else {
-        // Fallback to enhanced heuristic
-        return await analyzeImageWithHeuristic(imageElement);
-      }
-    } catch (error) {
-      console.error('Error analyzing image:', error);
-      // If analysis fails, allow the content through
-      return { isNSFW: false, confidence: 0, predictions: [], error: error.message };
-    }
-  }
-  
-  // NSFW.js image analysis
-  async function analyzeImageWithNSFWJS(imageElement) {
-    try {
-      // Create canvas and resize image to 224x224
-      const canvas = document.createElement('canvas');
-      const ctx = canvas.getContext('2d');
-      canvas.width = 224;
-      canvas.height = 224;
-      
-      // Draw and resize image
-      ctx.drawImage(imageElement, 0, 0, 224, 224);
-      
-      // Run NSFW.js prediction
-      const predictions = await nsfwModel.classify(canvas);
-      
-      // NSFW.js returns predictions in format: [{className, probability}]
-      const results = predictions.map(p => ({
-        className: p.className,
-        probability: p.probability
-      }));
-      
-      // Check for NSFW content (Porn, Sexy, Hentai)
-      const nsfwCategories = ['Porn', 'Sexy', 'Hentai'];
-      let nsfwScore = 0;
-      
-      for (const prediction of predictions) {
-        if (nsfwCategories.includes(prediction.className)) {
-          nsfwScore += prediction.probability;
-        }
-      }
-      
-      const isNSFW = nsfwScore > 0.5; // 50% threshold
-      
-      console.log('NSFW.js image analysis results:', {
-        isNSFW,
-        confidence: nsfwScore,
-        predictions: results
-      });
-      
-      return {
-        isNSFW,
-        confidence: nsfwScore,
-        predictions: results
-      };
-    } catch (error) {
-      console.error('NSFW.js analysis failed:', error);
-      throw error;
-    }
-  }
-  
-  // Enhanced heuristic image analysis (fallback)
-  async function analyzeImageWithHeuristic(imageElement) {
-    const canvas = document.createElement('canvas');
-    const ctx = canvas.getContext('2d');
-    canvas.width = 224;
-    canvas.height = 224;
-
-    ctx.drawImage(imageElement, 0, 0, 224, 224);
-
-    try {
-      const imageData = ctx.getImageData(0, 0, 224, 224);
-      const analyzer = (typeof window !== 'undefined' && window.__HTBTModeration && typeof window.__HTBTModeration.analyzePixels === 'function')
-        ? window.__HTBTModeration
-        : null;
-
-      if (!analyzer) {
-        throw new Error('Moderation heuristics module unavailable');
-      }
-
-      const result = analyzer.analyzePixels(imageData.data);
-
-      console.log('Smart image analysis results:', result.debug);
-
-      return {
-        isNSFW: result.isNSFW,
-        confidence: result.confidence,
-        predictions: [
-          { className: 'SkinTone', probability: result.debug.skinRatio },
-          { className: 'FleshTone', probability: result.debug.fleshRatio },
-          { className: 'PinkTone', probability: result.debug.pinkRatio },
-          { className: 'NudeTone', probability: result.debug.nudeRatio },
-          { className: 'TanTone', probability: result.debug.tanRatio },
-          { className: 'PeachTone', probability: result.debug.peachRatio }
-        ],
-        debug: result.debug
-      };
-    } catch (error) {
-      console.error('Heuristic moderation failed:', error);
-      return { isNSFW: false, confidence: 0, predictions: [], error: error.message };
-    }
-  }
-  
-  // Analyze image from file
-  async function analyzeImageFromFile(file) {
-    return new Promise((resolve, reject) => {
-      const img = new Image();
-      img.onload = async () => {
-        try {
-          const analysis = await analyzeImage(img);
-          URL.revokeObjectURL(img.src);
-          resolve(analysis);
-        } catch (error) {
-          URL.revokeObjectURL(img.src);
-          reject(error);
-        }
-      };
-      img.onerror = () => {
-        URL.revokeObjectURL(img.src);
-        reject(new Error('Failed to load image'));
-      };
-      img.src = URL.createObjectURL(file);
-    });
-  }
-  
-  // Analyze video from file
-  async function analyzeVideoFromFile(file) {
-    return new Promise((resolve, reject) => {
-      const video = document.createElement('video');
-      video.preload = 'metadata';
-      video.onloadedmetadata = async () => {
-        try {
-          const analysis = await analyzeVideo(video);
-          URL.revokeObjectURL(video.src);
-          resolve(analysis);
-        } catch (error) {
-          URL.revokeObjectURL(video.src);
-          reject(error);
-        }
-      };
-      video.onerror = () => {
-        URL.revokeObjectURL(video.src);
-        reject(new Error('Failed to load video'));
-      };
-      video.src = URL.createObjectURL(file);
-    });
-  }
-
-  // Analyze video for NSFW content (multiple frames)
-  async function analyzeVideo(videoElement) {
-    if (!moderationReady) {
-      console.log('Moderation not ready, allowing video');
-      return { isNSFW: false, confidence: 0, predictions: [] };
-    }
-    
-    try {
-      console.log('🎬 Starting video analysis...');
-      const canvas = document.createElement('canvas');
-      const ctx = canvas.getContext('2d');
-      const video = videoElement;
-      
-      // Set canvas size to match video
-      canvas.width = video.videoWidth || 320;
-      canvas.height = video.videoHeight || 240;
-      
-      console.log(`📹 Video dimensions: ${canvas.width}x${canvas.height}, duration: ${video.duration}s`);
-      
-      // Analyze more frames for better coverage
-      const frameCount = 8; // Increased from 5 to 8 frames
-      const frameResults = [];
-      
-      for (let i = 0; i < frameCount; i++) {
-        // Seek to different points in the video
-        const seekTime = (video.duration / frameCount) * i;
-        video.currentTime = seekTime;
-        
-        console.log(`🔍 Analyzing frame ${i + 1}/${frameCount} at ${seekTime.toFixed(2)}s`);
-        
-        // Wait for seek to complete
-        await new Promise(resolve => {
-          const onSeeked = () => {
-            video.removeEventListener('seeked', onSeeked);
-            resolve();
-          };
-          video.addEventListener('seeked', onSeeked);
-        });
-        
-        // Draw current frame to canvas
-        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-        
-        // DEBUG: Save frame for inspection if debugging is enabled
-        if (window.frameDebugEnabled) {
-          const frameDataURL = canvas.toDataURL();
-          console.log(`🖼️ Frame ${i + 1} data URL:`, frameDataURL.substring(0, 100) + '...');
-          // You can copy this URL and paste it in a new tab to see the actual frame
-        }
-        
-        // Analyze this frame using enhanced video-specific analysis
-        const frameAnalysis = await analyzeVideoFrame(canvas);
-        frameResults.push(frameAnalysis);
-        
-        console.log(`📊 Frame ${i + 1} result:`, {
-          isNSFW: frameAnalysis.isNSFW,
-          confidence: frameAnalysis.confidence.toFixed(3),
-          method: frameAnalysis.method
-        });
-      }
-      
-      // SMART video analysis - only flag if there's clear evidence of explicit content
-      const maxConfidence = Math.max(...frameResults.map(r => r.confidence));
-      const avgConfidence = frameResults.reduce((sum, r) => sum + r.confidence, 0) / frameResults.length;
-      const nsfwFrames = frameResults.filter(r => r.isNSFW).length;
-      const suspiciousFrames = frameResults.filter(r => r.confidence > 0.1).length; // 10% threshold for suspicious
-      
-      // Only flag if multiple frames are NSFW or if there's a high-confidence frame
-      const isNSFW = nsfwFrames >= 2 || (nsfwFrames >= 1 && maxConfidence > 0.2) || suspiciousFrames >= 3;
-      
-      console.log('🎬 Video analysis results:', {
-        isNSFW,
-        maxConfidence: maxConfidence.toFixed(3),
-        avgConfidence: avgConfidence.toFixed(3),
-        suspiciousFrames,
-        frameCount: frameResults.length,
-        frameResults: frameResults.map((r, i) => ({ 
-          frame: i, 
-          isNSFW: r.isNSFW, 
-          confidence: r.confidence.toFixed(3),
-          method: r.method
-        }))
-      });
-      
-      return {
-        isNSFW,
-        confidence: maxConfidence,
-        avgConfidence,
-        suspiciousFrames,
-        predictions: frameResults.flatMap(r => r.predictions),
-        frameResults
-      };
-    } catch (error) {
-      console.error('❌ Error analyzing video:', error);
-      // If analysis fails, allow the content through
-      return { isNSFW: false, confidence: 0, predictions: [], error: error.message };
-    }
-  }
-  
-  // SMART video frame analysis - detects explicit content in both light and dark videos
-  async function analyzeVideoFrame(canvas) {
-    const ctx = canvas.getContext('2d');
-    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-    const data = imageData.data;
-    
-    let skinPixels = 0;
-    let fleshPixels = 0;
-    let pinkPixels = 0;
-    let nudePixels = 0;
-    let tanPixels = 0;
-    let peachPixels = 0;
-    let darkPixels = 0;
-    let lightPixels = 0;
-    let mediumPixels = 0;
-    let totalPixels = data.length / 4;
-    
-    // First pass: determine if this is a dark video
-    let totalBrightness = 0;
-    for (let i = 0; i < data.length; i += 16) {
-      const r = data[i];
-      const g = data[i + 1];
-      const b = data[i + 2];
-      totalBrightness += (r + g + b) / 3;
-    }
-    const avgBrightness = totalBrightness / (data.length / 16);
-    const isDarkVideo = avgBrightness < 80; // Dark video threshold
-    
-    // Sample every 4th pixel for performance
-    for (let i = 0; i < data.length; i += 16) {
-      const r = data[i];
-      const g = data[i + 1];
-      const b = data[i + 2];
-      
-      // Adjust detection ranges based on video brightness
-      if (isDarkVideo) {
-        // DARK VIDEO DETECTION - lower thresholds for dark videos
-        
-        // Dark skin tone detection (much lower thresholds)
-        if (r > 40 && g > 20 && b > 10 && 
-            Math.max(r, g, b) - Math.min(r, g, b) > 8 &&
-            Math.abs(r - g) > 8 && r > g && r > b) {
-          skinPixels++;
-        }
-        
-        // Dark flesh tone detection
-        if (r > 60 && g > 40 && b > 25 && r > g && g > b) {
-          fleshPixels++;
-        }
-        
-        // Dark pink/flesh tone detection (for sensitive areas in dark videos)
-        if (r > 70 && g > 50 && b > 35 && r > g && g > b && (r - g) < 25) {
-          pinkPixels++;
-        }
-        
-        // Dark nude/beige tone detection
-        if (r > 90 && g > 75 && b > 60 && r > g && g > b && (r - g) < 30 && (g - b) < 30) {
-          nudePixels++;
-        }
-        
-        // Dark tan/brown skin tone detection
-        if (r > 80 && g > 60 && b > 40 && r > g && g > b && (r - g) < 40 && (g - b) < 40) {
-          tanPixels++;
-        }
-        
-        // Dark peach/salmon tone detection
-        if (r > 100 && g > 80 && b > 60 && r > g && g > b && (r - g) < 50 && (g - b) < 50) {
-          peachPixels++;
-        }
-      } else {
-        // BRIGHT VIDEO DETECTION - normal thresholds for well-lit videos
-        
-        // Normal skin tone detection
-        if (r > 95 && g > 40 && b > 20 && 
-            Math.max(r, g, b) - Math.min(r, g, b) > 15 &&
-            Math.abs(r - g) > 15 && r > g && r > b) {
-          skinPixels++;
-        }
-        
-        // Normal flesh tone detection
-        if (r > 120 && g > 80 && b > 60 && r > g && g > b) {
-          fleshPixels++;
-        }
-        
-        // Normal pink/flesh tone detection
-        if (r > 140 && g > 100 && b > 80 && r > g && g > b && (r - g) < 30) {
-          pinkPixels++;
-        }
-        
-        // Normal nude/beige tone detection
-        if (r > 180 && g > 150 && b > 120 && r > g && g > b && (r - g) < 40 && (g - b) < 40) {
-          nudePixels++;
-        }
-        
-        // Normal tan/brown skin tone detection
-        if (r > 160 && g > 120 && b > 80 && r > g && g > b && (r - g) < 50 && (g - b) < 50) {
-          tanPixels++;
-        }
-        
-        // Normal peach/salmon tone detection
-        if (r > 200 && g > 160 && b > 120 && r > g && g > b && (r - g) < 60 && (g - b) < 60) {
-          peachPixels++;
-        }
-      }
-      
-      // Brightness detection (same for both)
-      if (r < 50 && g < 50 && b < 50) {
-        darkPixels++;
-      }
-      if (r > 200 && g > 200 && b > 200) {
-        lightPixels++;
-      }
-      if (r > 100 && g > 100 && b > 100 && r < 200 && g < 200 && b < 200) {
-        mediumPixels++;
-      }
-    }
-    
-    const skinRatio = skinPixels / (totalPixels / 4);
-    const fleshRatio = fleshPixels / (totalPixels / 4);
-    const pinkRatio = pinkPixels / (totalPixels / 4);
-    const nudeRatio = nudePixels / (totalPixels / 4);
-    const tanRatio = tanPixels / (totalPixels / 4);
-    const peachRatio = peachPixels / (totalPixels / 4);
-    const darkRatio = darkPixels / (totalPixels / 4);
-    const lightRatio = lightPixels / (totalPixels / 4);
-    const mediumRatio = mediumPixels / (totalPixels / 4);
-    
-    // Adjust scoring based on video brightness
-    let totalInappropriate;
-    let hasLotsOfSkin, hasSensitiveAreas, hasNudeTones;
-    
-    if (isDarkVideo) {
-      // DARK VIDEO SCORING - extremely aggressive for dark explicit content
-      totalInappropriate = (skinRatio * 0.8) + (fleshRatio * 0.9) + (pinkRatio * 1.2) + 
-                          (nudeRatio * 1.1) + (tanRatio * 0.9) + (peachRatio * 1.0);
-      
-      hasLotsOfSkin = totalInappropriate > 0.03; // 3% threshold for dark videos (extremely aggressive)
-      hasSensitiveAreas = pinkRatio > 0.015; // 1.5% threshold for dark videos (extremely aggressive)
-      hasNudeTones = nudeRatio > 0.02; // 2% threshold for dark videos (extremely aggressive)
-    } else {
-      // BRIGHT VIDEO SCORING - normal thresholds
-      totalInappropriate = (skinRatio * 0.3) + (fleshRatio * 0.4) + (pinkRatio * 0.6) + 
-                          (nudeRatio * 0.5) + (tanRatio * 0.4) + (peachRatio * 0.5);
-      
-      hasLotsOfSkin = totalInappropriate > 0.15; // 15% threshold for bright videos
-      hasSensitiveAreas = pinkRatio > 0.05; // 5% threshold for bright videos
-      hasNudeTones = nudeRatio > 0.08; // 8% threshold for bright videos
-    }
-    
-    const isWellLit = lightRatio > 0.2;
-    
-    // Flag if it's clearly explicit content
-    const isNSFW = (hasLotsOfSkin && isWellLit) || hasSensitiveAreas || hasNudeTones;
-    
-    console.log(`🔍 Smart frame analysis (${isDarkVideo ? 'DARK' : 'BRIGHT'} video):`, {
-      avgBrightness: avgBrightness.toFixed(1),
-      skinRatio: skinRatio.toFixed(4),
-      fleshRatio: fleshRatio.toFixed(4),
-      pinkRatio: pinkRatio.toFixed(4),
-      nudeRatio: nudeRatio.toFixed(4),
-      totalInappropriate: totalInappropriate.toFixed(4),
-      hasLotsOfSkin,
-      hasSensitiveAreas,
-      isWellLit,
-      hasNudeTones,
-      isNSFW
-    });
-    
-    return {
-      isNSFW,
-      confidence: totalInappropriate,
-      predictions: [
-        { className: 'SkinTone', probability: skinRatio },
-        { className: 'FleshTone', probability: fleshRatio },
-        { className: 'PinkTone', probability: pinkRatio },
-        { className: 'NudeTone', probability: nudeRatio },
-        { className: 'TanTone', probability: tanRatio },
-        { className: 'PeachTone', probability: peachRatio },
-        { className: 'DarkRatio', probability: darkRatio },
-        { className: 'LightRatio', probability: lightRatio },
-        { className: 'MediumRatio', probability: mediumRatio }
-      ],
-      method: isDarkVideo ? 'smart_dark_video_heuristic' : 'smart_bright_video_heuristic'
-    };
-  }
-  
-  // Show moderation loading indicator
-  function showModerationLoading(message = 'Analyzing content...') {
-    const loadingDiv = document.createElement('div');
-    loadingDiv.id = 'moderationLoading';
-    loadingDiv.style.cssText = `
-      position: fixed;
-      top: 50%;
-      left: 50%;
-      transform: translate(-50%, -50%);
-      background: rgba(0, 0, 0, 0.8);
-      color: white;
-      padding: 20px;
-      border-radius: 8px;
-      z-index: 10000;
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-      text-align: center;
-    `;
-    loadingDiv.innerHTML = `
-      <div style="margin-bottom: 10px;">🔍</div>
-      <div>${message}</div>
-    `;
-    document.body.appendChild(loadingDiv);
-  }
-  
-  // Hide moderation loading indicator
-  function hideModerationLoading() {
-    const loadingDiv = document.getElementById('moderationLoading');
-    if (loadingDiv) {
-      loadingDiv.remove();
-    }
-  }
-  
-  // Block upload and show NSFW warning
-  function blockUploadForNSFW(reason = 'inappropriate content detected') {
-    hideModerationLoading();
-    showToast(`Upload blocked: ${reason}`, 'error');
-  }
-  
-  // Fallback video analysis when video can't be loaded directly
-  async function analyzeVideoFallback(ping) {
-    console.log(`🔄 Using fallback analysis for video in ping ${ping.id}`);
-    
-    try {
-      // Analyze based on URL patterns, file names, and other metadata
-      let suspiciousScore = 0;
-      let reasons = [];
-      
-      // Check URL patterns
-      const url = ping.videoUrl.toLowerCase();
-      if (url.includes('porn') || url.includes('xxx') || url.includes('adult') || url.includes('nsfw')) {
-        suspiciousScore += 0.8;
-        reasons.push('suspicious URL');
-      }
-      
-      // Check file name patterns
-      if (ping.videoUrl.includes('xvideos') || ping.videoUrl.includes('pornhub') || ping.videoUrl.includes('redtube')) {
-        suspiciousScore += 0.9;
-        reasons.push('adult site URL');
-      }
-      
-      // Check ping text for suspicious keywords
-      if (ping.text) {
-        const text = ping.text.toLowerCase();
-        const suspiciousWords = ['nude', 'naked', 'sex', 'porn', 'xxx', 'adult', 'nsfw', 'explicit'];
-        const foundWords = suspiciousWords.filter(word => text.includes(word));
-        if (foundWords.length > 0) {
-          suspiciousScore += foundWords.length * 0.2;
-          reasons.push(`suspicious text: ${foundWords.join(', ')}`);
-        }
-      }
-      
-      // Check if ping was previously flagged or deleted
-      if (ping.deleted || ping.flagged || ping.nsfw) {
-        suspiciousScore += 0.7;
-        reasons.push('previously flagged');
-      }
-      
-      // Check video duration (very short videos might be suspicious)
-      if (ping.duration && ping.duration < 5) {
-        suspiciousScore += 0.3;
-        reasons.push('very short duration');
-      }
-      
-      // AGGRESSIVE FALLBACK: If we can't analyze the video content directly,
-      // and this is a retroactive scan, be more suspicious of videos
-      // This is because we know some videos were inappropriate but can't load them
-      if (suspiciousScore === 0) {
-        console.log(`⚠️ No suspicious metadata found for ping ${ping.id}, but video exists - applying conservative scoring`);
-        suspiciousScore = 0.3; // Conservative suspicion for any video we can't analyze
-        reasons.push('video exists but cannot be analyzed - conservative flag');
-      }
-      
-      const isNSFW = suspiciousScore > 0.5;
-      const confidence = Math.min(suspiciousScore, 1.0);
-      
-      console.log(`🔍 Fallback analysis for ping ${ping.id}:`, {
-        suspiciousScore,
-        confidence,
-        reasons,
-        isNSFW,
-        method: 'fallback_metadata_analysis'
-      });
-      
-      return {
-        isNSFW,
-        confidence,
-        predictions: [
-          { className: 'SuspiciousURL', probability: url.includes('porn') || url.includes('xxx') ? 0.8 : 0 },
-          { className: 'SuspiciousText', probability: ping.text ? (ping.text.toLowerCase().includes('nude') ? 0.6 : 0) : 0 },
-          { className: 'PreviouslyFlagged', probability: ping.deleted || ping.flagged ? 0.7 : 0 },
-          { className: 'UnanalyzedVideo', probability: suspiciousScore === 0.3 ? 0.3 : 0 }
-        ],
-        method: 'fallback_metadata_analysis'
-      };
-      
-    } catch (error) {
-      console.error(`❌ Fallback analysis failed for ping ${ping.id}:`, error);
-      return {
-        isNSFW: false,
-        confidence: 0,
-        predictions: [],
-        method: 'fallback_failed'
-      };
-    }
-  }
-
-  // Analyze existing ping content for NSFW
-  async function analyzeExistingPingContent(ping) {
-    if (!moderationReady) {
-      console.log(`⚠️ Moderation not ready for ping ${ping.id}`);
-      return false; // If moderation not ready, don't delete
-    }
-    
-    try {
-      let isNSFW = false;
-      let analysisResults = [];
-      
-      // Analyze image if present
-      if (ping.imageUrl) {
-        console.log(`🖼️ Analyzing image for ping ${ping.id}: ${ping.imageUrl}`);
-        
-        try {
-          const img = new Image();
-          img.crossOrigin = 'anonymous'; // Handle CORS
-          
-          const imageAnalysis = await new Promise((resolve, reject) => {
-            const timeout = setTimeout(() => {
-              reject(new Error('Image loading timeout'));
-            }, 10000); // 10 second timeout
-            
-            img.onload = async () => {
-              clearTimeout(timeout);
-              try {
-                const analysis = await analyzeImage(img);
-                resolve(analysis);
-              } catch (error) {
-                reject(error);
-              }
-            };
-            img.onerror = () => {
-              clearTimeout(timeout);
-              reject(new Error('Failed to load image'));
-            };
-            img.src = ping.imageUrl;
-          });
-          
-          analysisResults.push(`Image: ${imageAnalysis.isNSFW ? 'NSFW' : 'Clean'} (${(imageAnalysis.confidence * 100).toFixed(1)}%)`);
-          
-          if (imageAnalysis.isNSFW) {
-            console.log(`❌ NSFW image detected in ping ${ping.id}:`, imageAnalysis);
-            isNSFW = true;
-          } else {
-            console.log(`✅ Image clean for ping ${ping.id}:`, imageAnalysis);
-          }
-        } catch (error) {
-          console.log(`⚠️ Failed to analyze image for ping ${ping.id}:`, error.message);
-          analysisResults.push(`Image: Failed to load (${error.message})`);
-          // Don't fail the whole analysis if image fails to load
-        }
-      }
-      
-      // Analyze video if present
-      if (ping.videoUrl && !isNSFW) {
-        console.log(`🎬 Analyzing video for ping ${ping.id}: ${ping.videoUrl}`);
-        
-        try {
-          // Try multiple approaches to load the video
-          let videoAnalysis = null;
-          
-          // Approach 1: Try with CORS
-          try {
-            const video = document.createElement('video');
-            video.crossOrigin = 'anonymous';
-            video.preload = 'metadata';
-            video.muted = true; // Mute to avoid autoplay issues
-            
-            videoAnalysis = await new Promise((resolve, reject) => {
-              const timeout = setTimeout(() => {
-                reject(new Error('Video loading timeout (CORS)'));
-              }, 10000); // 10 second timeout
-              
-              video.onloadedmetadata = async () => {
-                clearTimeout(timeout);
-                try {
-                  const analysis = await analyzeVideo(video);
-                  resolve(analysis);
-                } catch (error) {
-                  reject(error);
-                }
-              };
-              video.onerror = () => {
-                clearTimeout(timeout);
-                reject(new Error('Failed to load video (CORS)'));
-              };
-              video.src = ping.videoUrl;
-            });
-          } catch (corsError) {
-            console.log(`⚠️ CORS approach failed for ping ${ping.id}:`, corsError.message);
-            
-            // Approach 2: Try without CORS
-            try {
-              const video = document.createElement('video');
-              video.preload = 'metadata';
-              video.muted = true;
-              
-              videoAnalysis = await new Promise((resolve, reject) => {
-                const timeout = setTimeout(() => {
-                  reject(new Error('Video loading timeout (no CORS)'));
-                }, 10000);
-                
-                video.onloadedmetadata = async () => {
-                  clearTimeout(timeout);
-                  try {
-                    const analysis = await analyzeVideo(video);
-                    resolve(analysis);
-                  } catch (error) {
-                    reject(error);
-                  }
-                };
-                video.onerror = () => {
-                  clearTimeout(timeout);
-                  reject(new Error('Failed to load video (no CORS)'));
-                };
-                video.src = ping.videoUrl;
-              });
-            } catch (noCorsError) {
-              console.log(`⚠️ No-CORS approach also failed for ping ${ping.id}:`, noCorsError.message);
-              
-              // Approach 3: Fallback - analyze based on URL patterns and ping metadata
-              console.log(`🔄 Using fallback analysis for ping ${ping.id}`);
-              videoAnalysis = await analyzeVideoFallback(ping);
-            }
-          }
-          
-          if (videoAnalysis) {
-            analysisResults.push(`Video: ${videoAnalysis.isNSFW ? 'NSFW' : 'Clean'} (${(videoAnalysis.confidence * 100).toFixed(1)}%)`);
-            
-            if (videoAnalysis.isNSFW) {
-              console.log(`❌ NSFW video detected in ping ${ping.id}:`, videoAnalysis);
-              isNSFW = true;
-            } else {
-              console.log(`✅ Video clean for ping ${ping.id}:`, videoAnalysis);
-            }
-          } else {
-            analysisResults.push(`Video: Analysis failed`);
-          }
-        } catch (error) {
-          console.log(`⚠️ All video analysis approaches failed for ping ${ping.id}:`, error.message);
-          analysisResults.push(`Video: All methods failed (${error.message})`);
-        }
-      }
-      
-      // Log analysis summary
-      console.log(`📊 Ping ${ping.id} analysis summary:`, analysisResults.join(', '));
-      
-      return isNSFW;
-    } catch (error) {
-      console.error(`❌ Error analyzing existing ping content for ${ping.id}:`, error);
-      return false; // If analysis fails, don't delete
-    }
-  }
-
-  // Delete ping and associated content when NSFW is detected
-  async function deletePingForNSFW(pingId, reason = 'inappropriate content detected') {
-    try {
-      console.log(`Deleting ping ${pingId} due to NSFW content: ${reason}`);
-      
-      // Get database reference dynamically
-      const db = firebase.firestore();
-      const pingsCollection = db.collection('pings');
-      
-      // Delete from Firestore
-      await pingsCollection.doc(pingId).delete();
-      
-      // Remove from map if it exists (using correct variable name)
-      if (typeof markers !== 'undefined' && markers && markers.has(pingId)) {
-        try {
-          map.removeLayer(markers.get(pingId));
-          markers.delete(pingId);
-          console.log(`Removed marker for ping ${pingId}`);
-        } catch (mapError) {
-          console.log(`Could not remove marker for ping ${pingId}:`, mapError.message);
-        }
-      }
-      
-      // Remove from cache if it exists
-      if (typeof lastPingCache !== 'undefined' && lastPingCache && lastPingCache.has(pingId)) {
-        lastPingCache.delete(pingId);
-        console.log(`Removed ping ${pingId} from cache`);
-      }
-      
-      showToast('Content removed due to policy violation', 'error');
-      console.log(`Successfully deleted ping ${pingId}`);
-    } catch (error) {
-      console.error('Error deleting NSFW ping:', error);
-      showToast('Error removing content', 'error');
-    }
-  }
-  // Manual moderation system check and fix (call from console: checkModeration())
-  window.checkModeration = async function() {
-    console.log('🔍 Checking moderation system status...');
-    console.log('moderationReady:', moderationReady);
-    console.log('nsfwModel:', nsfwModel);
-    
-    if (!moderationReady) {
-      console.log('⚠️ Moderation system not ready - attempting to initialize...');
-      try {
-        await initializeModeration();
-        console.log('✅ Moderation system initialized successfully');
-        console.log('moderationReady is now:', moderationReady);
-      } catch (error) {
-        console.error('❌ Failed to initialize moderation system:', error);
-        console.log('🔄 Manually setting moderation ready as fallback...');
-        moderationReady = true;
-        nsfwModel = null;
-        console.log('✅ Moderation system manually enabled');
-      }
-    } else {
-      console.log('✅ Moderation system is ready');
-    }
-    
-    // Test the system
-    console.log('🧪 Testing moderation system...');
-    try {
-      const testCanvas = document.createElement('canvas');
-      testCanvas.width = 100;
-      testCanvas.height = 100;
-      const testCtx = testCanvas.getContext('2d');
-      testCtx.fillStyle = '#ffdbac'; // Skin tone color
-      testCtx.fillRect(0, 0, 100, 100);
-      
-      const testImg = new Image();
-      testImg.src = testCanvas.toDataURL();
-      testImg.onload = async () => {
-        try {
-          const result = await analyzeImage(testImg);
-          console.log('✅ Test analysis successful:', result);
-        } catch (error) {
-          console.error('❌ Test analysis failed:', error);
-        }
-      };
-    } catch (error) {
-      console.error('❌ Test setup failed:', error);
-    }
-  };
-
-  // Test function for content moderation (call from console: testModeration())
-  window.testModeration = async function() {
-    console.log('🧪 Testing enhanced content moderation system...');
-    console.log('Moderation ready:', moderationReady);
-    console.log('Using enhanced heuristics:', nsfwModel === null);
-    console.log('System features: 6 skin tone detection algorithms, weighted scoring, 10% threshold');
-    
-    if (moderationReady) {
-      // Create a test image (skin tone colored square)
-      const canvas = document.createElement('canvas');
-      const ctx = canvas.getContext('2d');
-      canvas.width = 100;
-      canvas.height = 100;
-      ctx.fillStyle = '#D2B48C'; // Tan color (skin tone)
-      ctx.fillRect(0, 0, 100, 100);
-      
-      try {
-        const result = await analyzeImage(canvas);
-        console.log('✅ Test analysis result:', result);
-        console.log('🎯 This image would be', result.isNSFW ? 'BLOCKED' : 'ALLOWED');
-      } catch (error) {
-        console.error('❌ Test analysis failed:', error);
-      }
-    } else {
-      console.log('❌ Moderation system not ready');
-    }
-  };
-  
-  // Test function for video moderation (call from console: testVideoModeration())
-  window.testVideoModeration = async function() {
-    console.log('🎬 Testing video moderation system...');
-    console.log('Moderation ready:', moderationReady);
-    
-    if (moderationReady) {
-      // Create a test video element with skin tone frames
-      const video = document.createElement('video');
-      const canvas = document.createElement('canvas');
-      const ctx = canvas.getContext('2d');
-      canvas.width = 320;
-      canvas.height = 240;
-      
-      // Create a test video with skin tone content
-      ctx.fillStyle = '#D2B48C'; // Tan color
-      ctx.fillRect(0, 0, 320, 240);
-      
-      // Simulate video analysis by analyzing the canvas directly
-      try {
-        const result = await analyzeVideoFrame(canvas);
-        console.log('✅ Video frame test result:', result);
-        console.log('🎯 This video frame would be', result.isNSFW ? 'BLOCKED' : 'ALLOWED');
-        console.log('📊 Confidence breakdown:', result.predictions);
-      } catch (error) {
-        console.error('❌ Video test analysis failed:', error);
-      }
-    } else {
-      console.log('❌ Moderation system not ready');
-    }
-  };
-  
-  // Enable frame debugging (call from console: enableFrameDebug())
-  window.enableFrameDebug = function() {
-    console.log('🔍 Frame debugging enabled - frames will be saved for inspection');
-    window.frameDebugEnabled = true;
-  };
-  
-  // Disable frame debugging (call from console: disableFrameDebug())
-  window.disableFrameDebug = function() {
-    console.log('🔍 Frame debugging disabled');
-    window.frameDebugEnabled = false;
-  };
-  
-  // Test video file analysis (call from console: testVideoFile(file))
-  window.testVideoFile = async function(file) {
-    console.log('🎬 Testing video file analysis...');
-    console.log('File:', file.name, 'Size:', file.size, 'Type:', file.type);
-    
-    if (!moderationReady) {
-      console.log('❌ Moderation system not ready');
-      return;
-    }
-    
-    try {
-      const result = await analyzeVideoFromFile(file);
-      console.log('✅ Video file analysis result:', result);
-      console.log('🎯 This video would be', result.isNSFW ? 'BLOCKED' : 'ALLOWED');
-      
-      if (result.frameResults) {
-        console.log('📊 Frame-by-frame results:', result.frameResults.map((r, i) => ({
-          frame: i + 1,
-          isNSFW: r.isNSFW,
-          confidence: r.confidence.toFixed(3)
-        })));
-      }
-    } catch (error) {
-      console.error('❌ Video file analysis failed:', error);
-    }
-  };
-  
-  // Enable drag and drop testing (call from console: enableDragDropTest())
-  window.enableDragDropTest = function() {
-    console.log('🎬 Drag and drop testing enabled - drag video files onto the page to test');
-    
-    // Add drag and drop event listeners
-    document.addEventListener('dragover', function(e) {
-      e.preventDefault();
-    });
-    
-    document.addEventListener('drop', function(e) {
-      e.preventDefault();
-      const files = e.dataTransfer.files;
-      
-      for (let file of files) {
-        if (file.type.startsWith('video/')) {
-          console.log('📁 Video file dropped:', file.name);
-          testVideoFile(file);
-        } else {
-          console.log('📁 Non-video file dropped:', file.name, '- ignoring');
-        }
-      }
-    });
-  };
-  
-  // Retroactively scan and delete inappropriate pings (call from console: scanAllPings())
-  window.scanAllPings = async function() {
-    console.log('🔍 Starting retroactive scan of all pings...');
-    
-    if (!moderationReady) {
-      console.log('❌ Moderation system not ready');
-      return;
-    }
-    
-    try {
-      // Wait for Firebase to be initialized
-      let db;
-      let attempts = 0;
-      while (attempts < 10) {
-        try {
-          db = firebase.firestore();
-          // Test the connection
-          await db.collection('pings').limit(1).get();
-          break;
-        } catch (error) {
-          attempts++;
-          console.log(`⏳ Waiting for Firebase... attempt ${attempts}/10`);
-          await new Promise(resolve => setTimeout(resolve, 1000));
-        }
-      }
-      
-      if (!db) {
-        console.log('❌ Firebase not available after 10 attempts');
-        return;
-      }
-      
-      const pingsCollection = db.collection('pings');
-      let allPings = [];
-      
-      try {
-        // First try: get all pings
-        const pingsSnapshot = await pingsCollection.get();
-        allPings = pingsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-        console.log(`📊 Found ${allPings.length} pings using direct query`);
-      } catch (error) {
-        console.log('❌ Direct query failed, trying alternative approach...');
-        
-        // Alternative: get pings from the last 30 days
-        const thirtyDaysAgo = Date.now() - (30 * 24 * 60 * 60 * 1000);
-        const recentSnapshot = await pingsCollection.where('timestamp', '>=', thirtyDaysAgo).get();
-        allPings = recentSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-        console.log(`📊 Found ${allPings.length} pings using date filter`);
-      }
-      
-      if (allPings.length === 0) {
-        console.log('❌ No pings found to scan. Checking database connection...');
-        console.log('db:', db);
-        console.log('pingsCollection:', pingsCollection);
-        
-        // Try to get any collection to test connection
-        try {
-          const testSnapshot = await db.collection('users').limit(1).get();
-          console.log(`📊 Test query found ${testSnapshot.docs.length} users`);
-        } catch (testError) {
-          console.log('❌ Test query failed:', testError);
-        }
-        return;
-      }
-      
-      let deletedCount = 0;
-      let scannedCount = 0;
-      
-      for (const ping of allPings) {
-        scannedCount++;
-        console.log(`🔍 Scanning ping ${scannedCount}/${allPings.length}: ${ping.id}`);
-        
-        try {
-          const isInappropriate = await analyzeExistingPingContent(ping);
-          
-          if (isInappropriate) {
-            console.log(`❌ Inappropriate content detected in ping ${ping.id} - deleting...`);
-            await deletePingForNSFW(ping.id, 'retroactive scan detected inappropriate content');
-            deletedCount++;
-          } else {
-            console.log(`✅ Ping ${ping.id} is clean`);
-          }
-        } catch (error) {
-          console.error(`❌ Error scanning ping ${ping.id}:`, error);
-        }
-        
-        // Add small delay to avoid overwhelming the system
-        await new Promise(resolve => setTimeout(resolve, 100));
-      }
-      
-      console.log(`🎉 Retroactive scan complete!`);
-      console.log(`📊 Scanned: ${scannedCount} pings`);
-      console.log(`🗑️ Deleted: ${deletedCount} inappropriate pings`);
-      console.log(`✅ Clean: ${scannedCount - deletedCount} pings`);
-      
-      showToast(`Retroactive scan complete: ${deletedCount} inappropriate pings deleted`, 'success');
-      
-    } catch (error) {
-      console.error('❌ Error during retroactive scan:', error);
-      showToast('Error during retroactive scan', 'error');
-    }
-  };
-  
-  // Debug function to check ping collection (call from console: debugPings())
-  window.debugPings = async function() {
-    console.log('🔍 Debugging ping collection...');
-    
-    try {
-      // Wait for Firebase to be initialized
-      let db;
-      let attempts = 0;
-      while (attempts < 10) {
-        try {
-          db = firebase.firestore();
-          // Test the connection
-          await db.collection('pings').limit(1).get();
-          break;
-        } catch (error) {
-          attempts++;
-          console.log(`⏳ Waiting for Firebase... attempt ${attempts}/10`);
-          await new Promise(resolve => setTimeout(resolve, 1000));
-        }
-      }
-      
-      if (!db) {
-        console.log('❌ Firebase not available after 10 attempts');
-        return;
-      }
-      
-      console.log('db:', db);
-      
-      // Try to get pings collection directly using db
-      const pingsCollection = db.collection('pings');
-      const snapshot = await pingsCollection.get();
-      console.log(`📊 Direct collection query: ${snapshot.docs.length} pings found`);
-      
-      if (snapshot.docs.length > 0) {
-        const firstPing = snapshot.docs[0].data();
-        console.log('📋 First ping sample:', firstPing);
-        console.log('📋 Ping ID:', snapshot.docs[0].id);
-        console.log('📋 Ping timestamp:', firstPing.timestamp || firstPing.createdAt);
-        console.log('📋 Ping has imageUrl:', !!firstPing.imageUrl);
-        console.log('📋 Ping has videoUrl:', !!firstPing.videoUrl);
-        console.log('📋 Ping text preview:', firstPing.text ? firstPing.text.substring(0, 50) + '...' : 'No text');
-      }
-      
-      // Try with pingsRef if it exists
-      if (typeof pingsRef !== 'undefined') {
-        const pingsRefSnapshot = await pingsRef.get();
-        console.log(`📊 pingsRef query: ${pingsRefSnapshot.docs.length} pings found`);
-      }
-      
-      // Test other collections
-      try {
-        const usersSnapshot = await db.collection('users').limit(1).get();
-        console.log(`📊 Users collection: ${usersSnapshot.docs.length} users found`);
-      } catch (error) {
-        console.log('❌ Users collection test failed:', error);
-      }
-      
-    } catch (error) {
-      console.error('❌ Error debugging pings:', error);
-    }
-  };
-  
-  // Scan pings from a specific time range (call from console: scanPingsFromDate('2024-01-01'))
-  window.scanPingsFromDate = async function(startDate) {
-    console.log(`🔍 Starting scan of pings from ${startDate}...`);
-    
-    if (!moderationReady) {
-      console.log('❌ Moderation system not ready');
-      return;
-    }
-    
-    try {
-      const startTimestamp = new Date(startDate).getTime();
-      
-      // Wait for Firebase to be initialized
-      let db;
-      let attempts = 0;
-      while (attempts < 10) {
-        try {
-          db = firebase.firestore();
-          // Test the connection
-          await db.collection('pings').limit(1).get();
-          break;
-        } catch (error) {
-          attempts++;
-          console.log(`⏳ Waiting for Firebase... attempt ${attempts}/10`);
-          await new Promise(resolve => setTimeout(resolve, 1000));
-        }
-      }
-      
-      if (!db) {
-        console.log('❌ Firebase not available after 10 attempts');
-        return;
-      }
-      
-      const pingsCollection = db.collection('pings');
-      
-      // Get pings from specific date onwards
-      const pingsSnapshot = await pingsCollection.where('timestamp', '>=', startTimestamp).get();
-      const pings = pingsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      
-      console.log(`📊 Found ${pings.length} pings to scan from ${startDate}`);
-      
-      let deletedCount = 0;
-      let scannedCount = 0;
-      
-      for (const ping of pings) {
-        scannedCount++;
-        console.log(`🔍 Scanning ping ${scannedCount}/${pings.length}: ${ping.id}`);
-        
-        try {
-          const isInappropriate = await analyzeExistingPingContent(ping);
-          
-          if (isInappropriate) {
-            console.log(`❌ Inappropriate content detected in ping ${ping.id} - deleting...`);
-            await deletePingForNSFW(ping.id, 'retroactive scan detected inappropriate content');
-            deletedCount++;
-          } else {
-            console.log(`✅ Ping ${ping.id} is clean`);
-          }
-        } catch (error) {
-          console.error(`❌ Error scanning ping ${ping.id}:`, error);
-        }
-        
-        // Add small delay to avoid overwhelming the system
-        await new Promise(resolve => setTimeout(resolve, 100));
-      }
-      
-      console.log(`🎉 Scan complete!`);
-      console.log(`📊 Scanned: ${scannedCount} pings`);
-      console.log(`🗑️ Deleted: ${deletedCount} inappropriate pings`);
-      console.log(`✅ Clean: ${scannedCount - deletedCount} pings`);
-      
-      showToast(`Scan complete: ${deletedCount} inappropriate pings deleted`, 'success');
-      
-    } catch (error) {
-      console.error('❌ Error during date-based scan:', error);
-      showToast('Error during date-based scan', 'error');
-    }
-  };
-  
-  // Initialize moderation system with delay to ensure script is loaded
-  setTimeout(async () => {
-    await initializeModeration();
-    
-    // 🚀 PERFORMANCE OPTIMIZATION: Disabled automatic retroactive scanning
-    // Auto-scan was slowing down app startup significantly
-    // To manually scan pings, use console: scanAllPings() or scanPingsFromDate('2025-01-01')
-    console.log('💡 Moderation ready. Run scanAllPings() in console to manually scan content.');
-    
-    /* DISABLED AUTOMATIC SCAN - Run manually if needed
-    setTimeout(async () => {
-      console.log('🔄 Starting automatic retroactive scan of recent pings...');
-      try {
-        const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
-        await scanPingsFromDate(sevenDaysAgo);
-      } catch (error) {
-        console.error('❌ Automatic retroactive scan failed:', error);
-      }
-    }, 5000);
-    */
-  }, 1000);
 
   /* --------- Profile System --------- */
   const PROFILE_VIEW = {
@@ -3626,11 +2401,12 @@ startRequestsListeners(currentUser.uid);
   let userNotifiedTop3 = new Set(); // Track which pings we've sent top-3 notifications for
   const markers=new Map(); const lastPingCache=new Map(); let unsubscribe=null;
   let currentUser=null, myFriends=new Set();
-  // Simple user doc cache for rendering custom pings
   const userDocCache = new Map();
+  const CACHE_MAX = 500;
+  function trimCache(m){ if(m.size>CACHE_MAX){ const it=m.keys(); for(let i=0;i<m.size-CACHE_MAX;i++) m.delete(it.next().value); } }
   async function awaitCachedUser(uid){
     if(userDocCache.has(uid)) return userDocCache.get(uid);
-    try{ const snap=await usersRef.doc(uid).get(); const data=snap.exists? snap.data():null; userDocCache.set(uid,data); return data; }catch(_){ return null; }
+    try{ const snap=await usersRef.doc(uid).get(); const data=snap.exists? snap.data():null; userDocCache.set(uid,data); trimCache(userDocCache); return data; }catch(_){ return null; }
   }
   
   // 🔥 PERFORMANCE: Icon cache to avoid redundant async calls
@@ -4577,7 +3353,7 @@ startRequestsListeners(currentUser.uid);
 
   /* --------- Quota & rate limits --------- */
   async function todayCount(uid){
-    const start=new Date(); start.setHours(0,0,0,0);
+    const now=montrealNow(); now.setHours(0,0,0,0); const start=now;
     try{ const qs=await pingsRef.where('authorId','==',uid).where('createdAt','>=',start).get(); return qs.size; }
     catch(e){ const qs=await pingsRef.where('authorId','==',uid).get(); let c=0; qs.forEach(d=>{ const t=d.data().createdAt?.toDate?.(); if(t && t>=start) c++; }); return c; }
   }
@@ -4672,24 +3448,50 @@ startRequestsListeners(currentUser.uid);
 
   // Subscriber UI removed
 
+  /* --------- Crosshair placement mode --------- */
+  let crosshairMarker = null;
+  let crosshairActive = false;
+  const crosshairIcon = L.divIcon({ className:'crosshair-icon', html:'<div class="crosshair-dot"></div>', iconSize:[40,40], iconAnchor:[20,20] });
+
+  function startCrosshairMode(){
+    if(crosshairActive) return;
+    crosshairActive = true;
+    const base = (userPos && userPos.distanceTo(FENCE_CENTER) <= RADIUS_M) ? userPos : FENCE_CENTER;
+    crosshairMarker = L.marker(base, { icon: crosshairIcon, draggable: true, zIndexOffset: 9999 }).addTo(map);
+    crosshairMarker.on('dragend', ()=>{
+      const pos = crosshairMarker.getLatLng();
+      const clamped = clampToCircle(FENCE_CENTER, pos, RADIUS_M);
+      crosshairMarker.setLatLng(clamped);
+    });
+    let bar = document.getElementById('crosshairBar');
+    if(!bar){
+      bar = document.createElement('div'); bar.id='crosshairBar';
+      bar.innerHTML = '<span>Drag the pin to choose location</span><button id="confirmCrosshair" class="btn">Confirm</button><button id="cancelCrosshair" class="btn" style="background:#e5e7eb;color:#374151">Cancel</button>';
+      document.body.appendChild(bar);
+    }
+    bar.style.display = 'flex';
+    document.getElementById('confirmCrosshair').onclick = ()=>{
+      const pos = crosshairMarker.getLatLng();
+      const clamped = clampToCircle(FENCE_CENTER, pos, RADIUS_M);
+      $('#lat').value = clamped.lat.toFixed(6);
+      $('#lon').value = clamped.lng.toFixed(6);
+      endCrosshairMode();
+      openModal('createModal');
+      try{ const lbl=document.getElementById('attachMediaLabel'); if(lbl) lbl.style.display='inline-flex'; if(attachPreview) attachPreview.style.display='none'; if(attachVideoPreview) attachVideoPreview.style.display='none'; if(attachInput) attachInput.value=''; }catch(_){ }
+    };
+    document.getElementById('cancelCrosshair').onclick = ()=> endCrosshairMode();
+  }
+  function endCrosshairMode(){
+    crosshairActive = false;
+    if(crosshairMarker){ map.removeLayer(crosshairMarker); crosshairMarker = null; }
+    const bar = document.getElementById('crosshairBar');
+    if(bar) bar.style.display = 'none';
+  }
+
   $('#addBtn').onclick=()=>{
     if(!currentUser) return showToast('Sign in first');
     if(currentUser.isAnonymous) return showToast("Guests can't post. Create an account to drop pings.");
-    const latEl=$('#lat'), lonEl=$('#lon');
-    const base=(userPos && userPos.distanceTo(FENCE_CENTER)<=RADIUS_M) ? userPos : FENCE_CENTER;
-    latEl.value=base.lat.toFixed(6); lonEl.value=base.lng.toFixed(6);
-    openModal('createModal');
-    // Reset preview and ensure attach is enabled for all users
-    try{
-      const lbl = document.getElementById('attachMediaLabel');
-      if(attachInput) attachInput.disabled = false;
-      if(lbl){ lbl.classList.remove('muted'); lbl.style.pointerEvents='auto'; lbl.title='Attach Media'; }
-      const prev = document.getElementById('attachPreview');
-      if(prev) prev.style.display = 'none';
-      if(lbl) lbl.style.display = 'inline-flex';
-      if(attachInput) attachInput.value = '';
-      if(attachVideoPreview) attachVideoPreview.style.display = 'none';
-    }catch(_){ }
+    startCrosshairMode();
   };
   $('#cancelCreate').onclick=()=>{ try{ const prev=document.getElementById('attachPreview'); const lbl=document.getElementById('attachMediaLabel'); if(prev) prev.style.display='none'; if(lbl) lbl.style.display='inline-flex'; if(attachInput) attachInput.value=''; const vp=document.getElementById('attachVideoPreview'); if(vp) vp.style.display='none'; if(attachPreviewVid){ attachPreviewVid.pause(); attachPreviewVid.src=''; } }catch(_){ } closeModal('createModal'); };
   // Visibility toggle element
@@ -4718,12 +3520,7 @@ startRequestsListeners(currentUser.uid);
     };
   }
 
-  map.on('click', e=>{
-    if(!currentUser || currentUser.isAnonymous) return;
-    const clamped=clampToCircle(FENCE_CENTER, e.latlng, RADIUS_M);
-    $('#lat').value=clamped.lat.toFixed(6); $('#lon').value=clamped.lng.toFixed(6);
-    openModal('createModal');
-  });
+  /* map click to create removed */
 
   function validText(s){ 
     if(!s) return false; 
@@ -4777,22 +3574,10 @@ startRequestsListeners(currentUser.uid);
         const isImage = (mediaFile.type||'').startsWith('image/');
         if(isImage){
           if(mediaFile.size > 10*1024*1024) return showToast('Image must be ≤ 10MB');
-          showModerationLoading('Analyzing image...');
-          try{
-            const analysis = await analyzeImageFromFile(mediaFile);
-            hideModerationLoading();
-            if(analysis.isNSFW){ return blockUploadForNSFW(`inappropriate content detected (confidence: ${Math.round(analysis.confidence*100)}%)`); }
-            imageUrl = await uploadPingImage(mediaFile, currentUser.uid);
-          }catch(error){ hideModerationLoading(); console.error('Error analyzing image:', error); imageUrl = await uploadPingImage(mediaFile, currentUser.uid); }
+          imageUrl = await uploadPingImage(mediaFile, currentUser.uid);
         } else if(isVideo){
           if(mediaFile.size > 50*1024*1024) return showToast('Video must be ≤ 50MB');
-          showModerationLoading('Analyzing video...');
-          try{
-            const analysis = await analyzeVideoFromFile(mediaFile);
-            hideModerationLoading();
-            if(analysis.isNSFW){ return blockUploadForNSFW(`inappropriate content detected (confidence: ${Math.round(analysis.confidence*100)}%)`); }
-            videoUrl = await uploadPingVideo(mediaFile, currentUser.uid);
-          }catch(error){ hideModerationLoading(); console.error('Error analyzing video:', error); videoUrl = await uploadPingVideo(mediaFile, currentUser.uid); }
+          videoUrl = await uploadPingVideo(mediaFile, currentUser.uid);
         }
       }
 
@@ -5247,6 +4032,8 @@ startRequestsListeners(currentUser.uid);
   async function setVote(pingId,type){
     if(!currentUser) return showToast('Sign in first');
     if(currentUser.isAnonymous) return showToast("Guests can't react");
+    const cachedPing = lastPingCache.get(pingId);
+    if(cachedPing && cachedPing.authorId === currentUser.uid) return showToast("Can't vote on your own ping");
     try{
       // Map legacy like/dislike to secure emoji reactions
       const emoji = type === 'like' ? '👍' : '👎';
@@ -6082,7 +4869,14 @@ startRequestsListeners(currentUser.uid);
           status: 'pending'
         });
         
-        showToast('Report submitted. Thank you.','success');
+        try{
+          const allReports = await db.collection('reports').where('contentId','==',pingId).where('contentType','==','ping').get();
+          if(allReports.size >= 3){
+            await pingsRef.doc(pingId).set({ status:'hidden', hiddenReason:'community_reports', hiddenAt: firebase.firestore.FieldValue.serverTimestamp() },{merge:true});
+            removeMarker(pingId); lastPingCache.delete(pingId); closeSheet();
+            showToast('Content hidden pending review. Thank you.','success');
+          } else { showToast('Report submitted. Thank you.','success'); }
+        }catch(_){ showToast('Report submitted. Thank you.','success'); }
         closeModal('reportModal');
         
         // Reset form
@@ -6551,24 +5345,7 @@ startRequestsListeners(currentUser.uid);
             ctx.restore();
             const dataUrl = canvas.toDataURL('image/png');
             
-            // Analyze custom ping image for NSFW content before saving
-            showModerationLoading('Analyzing custom ping image...');
-            try {
-              // Convert data URL to blob for analysis
-              const response = await fetch(dataUrl);
-              const blob = await response.blob();
-              const file = new File([blob], 'custom-ping.png', { type: 'image/png' });
-              
-              const analysis = await analyzeImageFromFile(file);
-              hideModerationLoading();
-              if (analysis.isNSFW) {
-                return blockUploadForNSFW(`inappropriate content detected (confidence: ${Math.round(analysis.confidence * 100)}%)`);
-              }
-            } catch (error) {
-              hideModerationLoading();
-              console.error('Error analyzing custom ping image:', error);
-              // If analysis fails, allow save to proceed
-            }
+
             
             await usersRef.doc(currentUser.uid).set({ customPingUrl:dataUrl, selectedPingTier:1000 }, { merge:true });
             // Refresh cache and markers immediately
@@ -6642,20 +5419,6 @@ startRequestsListeners(currentUser.uid);
         
         const file = new File([blob], 'avatar.jpg', { type:'image/jpeg' });
         console.log('Uploading file:', file.size, 'bytes');
-        
-        // Analyze profile picture for NSFW content before upload
-        showModerationLoading('Analyzing profile picture...');
-        try {
-          const analysis = await analyzeImageFromFile(file);
-          hideModerationLoading();
-          if (analysis.isNSFW) {
-            return blockUploadForNSFW(`inappropriate content detected (confidence: ${Math.round(analysis.confidence * 100)}%)`);
-          }
-        } catch (error) {
-          hideModerationLoading();
-          console.error('Error analyzing profile picture:', error);
-          // If analysis fails, allow upload to proceed
-        }
         
         const url = await uploadPingImage(file, currentUser.uid);
         console.log('Uploaded to:', url);
@@ -6788,6 +5551,7 @@ startRequestsListeners(currentUser.uid);
       const rm=document.createElement('button'); rm.className='btn'; rm.textContent='Remove';
       rm.onclick=async(e)=>{ 
         e.stopPropagation();
+        if(!confirm('Remove '+fr.name+' from friends?')) return;
         try{
           await removeFriendSecure(fr.fid);
           showToast('Removed','success');
@@ -6804,6 +5568,50 @@ startRequestsListeners(currentUser.uid);
   }
   
   // 🔥 REAL-TIME FEATURE: Auto-refresh friends list when it changes
+  /* --------- My Pings section --------- */
+  const toggleMyPingsBtn = document.getElementById('toggleMyPings');
+  const myPingsList = document.getElementById('myPingsList');
+  let myPingsLoaded = false;
+  if(toggleMyPingsBtn){
+    toggleMyPingsBtn.onclick = async ()=>{
+      if(myPingsList.style.display === 'none'){
+        myPingsList.style.display = 'block';
+        toggleMyPingsBtn.textContent = 'Hide';
+        if(!myPingsLoaded) await loadMyPings();
+      } else {
+        myPingsList.style.display = 'none';
+        toggleMyPingsBtn.textContent = 'Show';
+      }
+    };
+  }
+  async function loadMyPings(){
+    if(!currentUser) return;
+    myPingsList.innerHTML = '<div class="muted">Loading...</div>';
+    try{
+      const qs = await pingsRef.where('authorId','==',currentUser.uid).orderBy('createdAt','desc').limit(30).get();
+      if(qs.empty){ myPingsList.innerHTML = '<div class="muted">No pings yet.</div>'; myPingsLoaded=true; return; }
+      myPingsList.innerHTML = '';
+      qs.forEach(doc=>{
+        const p = doc.data();
+        const text = (p.text||'').trim();
+        const net = Math.max(0,(p.likes||0)-(p.dislikes||0));
+        const ts = p.createdAt?.toDate ? p.createdAt.toDate() : null;
+        const age = ts ? timeAgo(ts) : '';
+        const hidden = (p.status === 'hidden');
+        const div = document.createElement('div');
+        div.style.cssText = 'padding:8px 0;border-bottom:1px solid #f2f2f2;cursor:pointer;';
+        if(hidden) div.style.opacity = '0.5';
+        div.innerHTML = '<div style="font-weight:700;font-size:13px">'+(text.length>60? text.slice(0,60)+'\u2026' : text)+'</div><div class="muted" style="font-size:11px;margin-top:2px">'+net+'\u2605 \u00b7 '+age+(hidden?' \u00b7 Hidden':'')+'</div>';
+        div.onclick = ()=>{ closeModal('profileModal'); openSheet(doc.id); };
+        myPingsList.appendChild(div);
+      });
+      myPingsLoaded = true;
+    }catch(err){
+      console.error('Error loading my pings:', err);
+      myPingsList.innerHTML = '<div class="muted">Failed to load pings.</div>';
+    }
+  }
+
   function startFriendsListener(uid) {
     if(friendsListUnsub) friendsListUnsub(); // Clean up old listener
     
@@ -7139,6 +5947,23 @@ startRequestsListeners(currentUser.uid);
   const potwMeta = $('#potwMeta');
   const potwJump = $('#potwJump');
   const potwEmpty= $('#potwEmpty');
+  let potwCollapsed = false;
+  const potwToggle = document.getElementById('potwToggle');
+  const potwBody = document.getElementById('potwBody');
+  const potwChevron = document.getElementById('potwChevron');
+  if(potwToggle){
+    potwToggle.onclick = ()=>{
+      potwCollapsed = !potwCollapsed;
+      if(potwBody) potwBody.style.display = potwCollapsed ? 'none' : '';
+      const lb = document.getElementById('potwLeaderboard');
+      const lw = document.getElementById('lastWeekChampion');
+      if(lb && potwCollapsed){ lb.dataset.wasVisible = lb.style.display!=='none'?'true':'false'; lb.style.display='none'; }
+      else if(lb && !potwCollapsed && lb.dataset.wasVisible==='true') lb.style.display='block';
+      if(lw && potwCollapsed) lw.style.display='none';
+      if(potwChevron) potwChevron.textContent = potwCollapsed ? '\u25b6' : '\u25bc';
+      positionHallOfFameButton();
+    };
+  }
 
   function updatePotwCard(){
     // Get all eligible pings for this week

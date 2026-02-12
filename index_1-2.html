@@ -116,8 +116,8 @@
 
     <!-- Ping of the Week card -->
     <div id="potwCard" class="potw-card" role="region" aria-live="polite">
-      <div class="potw-title">PING OF THE WEEK</div>
-      <div class="potw-row">
+      <div class="potw-title" id="potwToggle" style="cursor:pointer;user-select:none">PING OF THE WEEK <span id="potwChevron" style="font-size:10px">&#9660;</span></div>
+      <div class="potw-row" id="potwBody">
         <img id="potwImg" alt="Ping of the Week image" style="display:none;"/>
         <div class="potw-body">
           <div class="potw-text" id="potwText"></div>
@@ -292,6 +292,15 @@
               <div><strong>Friends</strong></div>
               <div id="profileFriendsList" style="margin-top:6px">
                 <div class="muted">No friends yet.</div>
+              </div>
+            </div>
+            <div class="section" style="margin-top:12px">
+              <div style="display:flex;align-items:center;justify-content:space-between">
+                <strong>My Pings</strong>
+                <button class="btn" id="toggleMyPings" style="font-size:11px;padding:2px 8px">Show</button>
+              </div>
+              <div id="myPingsList" style="margin-top:6px;display:none">
+                <div class="muted">No pings yet.</div>
               </div>
             </div>
           </div>
@@ -552,7 +561,6 @@
   <script src="performance-fixes.js?v=20251104-10"></script>
   <script src="mobile-fixes.js?v=20251104-10"></script>
   <script src="xss-protection.js?v=20251104-10"></script>
-  <script src="moderation-heuristics.js?v=20251104-10"></script>
   <script src="cloud-functions-client.js?v=20251104-10"></script>
   <script src="app.js?v=20251104-10"></script>
 
