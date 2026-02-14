@@ -1745,28 +1745,38 @@ startRequestsListeners(currentUser.uid);
       ].join(',');
       
       
-      // Use Photon geocoder (OSM-based, optimized for autocomplete, no API key needed)
-      const response = await fetch(
-        `https://photon.komoot.io/api/?` +
-        `q=${encodeURIComponent(query)}&` +
-        `lat=${FENCE_CENTER.lat}&` +
-        `lon=${FENCE_CENTER.lng}&` +
-        `limit=20&` +
-        `lang=en`
-      );
+      // Query both Photon (good for POIs) and Nominatim (good for street addresses) in parallel
+      const photonUrl = `https://photon.komoot.io/api/?q=${encodeURIComponent(query)}&lat=${FENCE_CENTER.lat}&lon=${FENCE_CENTER.lng}&limit=15&lang=en`;
+      const nominatimUrl = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(query)}&format=json&limit=10&viewbox=${viewbox}&bounded=0&addressdetails=1`;
       
-      if(!response.ok) throw new Error('Search failed');
+      const [photonRes, nominatimRes] = await Promise.allSettled([
+        fetch(photonUrl).then(r=>r.ok?r.json():null),
+        fetch(nominatimUrl, {headers:{'User-Agent':'HadToBeThere/1.0'}}).then(r=>r.ok?r.json():null)
+      ]);
       
-      const data = await response.json();
-      // Convert Photon GeoJSON features to a flat results array
-      const results = (data.features||[]).map(f => ({
-        lat: f.geometry.coordinates[1],
-        lon: f.geometry.coordinates[0],
-        name: f.properties.name || '',
-        display_name: [f.properties.name, f.properties.street, f.properties.city, f.properties.state].filter(Boolean).join(', '),
-        type: f.properties.osm_value || f.properties.type || '',
-        class: f.properties.osm_key || ''
-      }));
+      const results = [];
+      const seen = new Set(); // dedupe by ~location
+      
+      // Photon results (POIs, places)
+      if(photonRes.status==='fulfilled' && photonRes.value && photonRes.value.features){
+        for(const f of photonRes.value.features){
+          const lat=f.geometry.coordinates[1], lon=f.geometry.coordinates[0];
+          const key=lat.toFixed(4)+','+lon.toFixed(4);
+          if(seen.has(key)) continue; seen.add(key);
+          results.push({ lat, lon, name: f.properties.name||'', display_name: [f.properties.name,f.properties.housenumber?f.properties.housenumber+' '+f.properties.street:f.properties.street,f.properties.city,f.properties.state].filter(Boolean).join(', '), type: f.properties.osm_value||'', class: f.properties.osm_key||'' });
+        }
+      }
+      
+      // Nominatim results (street addresses)
+      if(nominatimRes.status==='fulfilled' && nominatimRes.value){
+        for(const r of nominatimRes.value){
+          const lat=parseFloat(r.lat), lon=parseFloat(r.lon);
+          if(isNaN(lat)||isNaN(lon)) continue;
+          const key=lat.toFixed(4)+','+lon.toFixed(4);
+          if(seen.has(key)) continue; seen.add(key);
+          results.push({ lat, lon, name: r.name||r.display_name.split(',')[0], display_name: r.display_name, type: r.type||'', class: r.class||'' });
+        }
+      }
       
       // Filter to allowed circle
       const filteredResults = results.filter(r => {
