@@ -1575,10 +1575,9 @@ startRequestsListeners(currentUser.uid);
   /* --------- Map --------- */
   const map = L.map('map',{ center:DEFAULT_CENTER, zoom:12, minZoom:0, maxZoom:22, zoomAnimation:true, markerZoomAnimation:true, fadeAnimation:true, zoomSnap:.5, wheelPxPerZoomLevel:45, wheelDebounceTime:40, scrollWheelZoom:true, doubleClickZoom:false, dragging:true, touchZoom:'center', zoomControl:false });
   // Hotspot overlay pane (below markers, above inner overlay)
-  const HOTSPOT_RADIUS_M = 160; // 🎯 1.6x the original 100m radius
-  const HOTSPOT_MIN_PINGS = 15; // 🎯 Minimum 15 pings required for hotspot
+  const HOTSPOT_RADIUS_M = 160;
   const HOTSPOT_MIN_CENTER_SEP_M = 150;
-  const HOTSPOT_MAX_CLUSTERS = 3;
+  const HOTSPOT_MIN_CLUSTER_SIZE = 2; // minimum pings to form a hotspot
   try{ map.createPane('hotspotPane'); map.getPane('hotspotPane').style.zIndex = 500; }catch(_){ }
   let hotspotLayers=[], hotspotData=[], hotspotTimer=null;
   // Gate: do not render hotspots until intro animation completes
@@ -1589,9 +1588,9 @@ startRequestsListeners(currentUser.uid);
   function loadHotspot(){ try{ const s=localStorage.getItem('hadToBeThere_hotspot'); if(!s) return []; const parsed=JSON.parse(s); const arr=Array.isArray(parsed)? parsed : (Array.isArray(parsed.list)? parsed.list: []); return arr.filter(d=>d && typeof d.lat==='number' && typeof d.lon==='number'); }catch(_){ return []; } }
 
   function clearHotspot(){ if(hotspotLayers&&hotspotLayers.length){ hotspotLayers.forEach(l=>{ try{ map.removeLayer(l); }catch(_){ } }); } hotspotLayers=[]; }
-  function updateHotspotVisibility(){ if(!hotspotsEnabled){ clearHotspot(); return; } if(filterMode!=='all'){ clearHotspot(); return; } if(hotspotData && hotspotData.length){ drawHotspots(hotspotData); } else { clearHotspot(); } }
+  function updateHotspotVisibility(){ if(!hotspotsEnabled){ clearHotspot(); return; } if(hotspotData && hotspotData.length){ drawHotspots(hotspotData); } else { clearHotspot(); } }
 
-  function drawHotspots(list){ if(!hotspotsEnabled){ return; } if(filterMode!=='all'){ clearHotspot(); return; } clearHotspot(); if(!list || !list.length) return;
+  function drawHotspots(list){ if(!hotspotsEnabled){ return; } clearHotspot(); if(!list || !list.length) return;
     list.forEach((data,idx)=>{
       if(typeof data.lat!== 'number' || typeof data.lon!== 'number') return;
       // 🎯 Light red circle with no border, same translucency
@@ -1618,35 +1617,41 @@ startRequestsListeners(currentUser.uid);
   }
 
   // 🔥 PERFORMANCE: Increased debounce from 250ms to 1000ms - hotspot computation is expensive
-  function scheduleHotspotRecompute(){ if(hotspotTimer) clearTimeout(hotspotTimer); hotspotTimer=setTimeout(recomputeHotspot, 1000); }
+  function scheduleHotspotRecompute(){ if(hotspotTimer) clearTimeout(hotspotTimer); hotspotTimer=setTimeout(recomputeHotspot, 250); }
   function recomputeHotspot(){
     hotspotTimer=null;
     // Collect eligible pings (always consider All, independent of current filter selection)
     const seen=new Set(); const arr=[]; lastPingCache.forEach((p,id)=>{ if(seen.has(id)) return; seen.add(id); if(hotspotEligible(p)) arr.push(p); });
     if(arr.length===0){ hotspotData=[]; updateHotspotVisibility(); return; }
-    // Helper to evaluate a center candidate over provided set
-    function evaluateCenter(centerPing, pool){
-      const cLL=L.latLng(centerPing.lat,centerPing.lon); const members=[];
-      for(let j=0;j<pool.length;j++){ const q=pool[j]; const d=cLL.distanceTo([q.lat,q.lon]); if(d<=HOTSPOT_RADIUS_M) members.push(q); }
-      const count=members.length; if(count===0) return null;
-      let sumLat=0,sumLon=0; for(const m of members){ sumLat+=m.lat; sumLon+=m.lon; }
+    // Mutable pool – entries are nullified once consumed by a cluster
+    const pool = arr.slice();
+    // Helper to evaluate a center candidate over remaining pool entries
+    function evaluateCenter(idx){
+      const cp=pool[idx]; if(!cp) return null;
+      const cLL=L.latLng(cp.lat,cp.lon); let count=0, sumLat=0, sumLon=0;
+      for(let j=0;j<pool.length;j++){ const q=pool[j]; if(!q) continue; if(cLL.distanceTo([q.lat,q.lon])<=HOTSPOT_RADIUS_M){ count++; sumLat+=q.lat; sumLon+=q.lon; } }
+      if(count<HOTSPOT_MIN_CLUSTER_SIZE) return null;
       const centLat=sumLat/count, centLon=sumLon/count;
-      const centLL=L.latLng(centLat,centLon); let sumD=0; for(const m of members){ sumD+=centLL.distanceTo([m.lat,m.lon]); }
-      const avgDist=sumD/count; return { lat:centLat, lon:centLon, count, avgDist };
+      const centLL=L.latLng(centLat,centLon); let sumD=0;
+      for(let j=0;j<pool.length;j++){ const q=pool[j]; if(!q) continue; if(cLL.distanceTo([q.lat,q.lon])<=HOTSPOT_RADIUS_M) sumD+=centLL.distanceTo([q.lat,q.lon]); }
+      return { lat:centLat, lon:centLon, count, avgDist:sumD/count };
     }
-    // Greedily pick up to HOTSPOT_MAX_CLUSTERS separated cluster centers
+    // Greedily find ALL separated clusters (no max limit)
     const selected=[];
-    for(let k=0;k<HOTSPOT_MAX_CLUSTERS;k++){
-      let best=null;
-      for(let i=0;i<arr.length;i++){
-        const cand=evaluateCenter(arr[i], arr); if(!cand) continue;
-        // 🎯 Enforce minimum ping count requirement
-        if(cand.count < HOTSPOT_MIN_PINGS) continue; // Must have at least 15 pings
-        let tooClose=false; for(const prev of selected){ const d=L.latLng(prev.lat,prev.lon).distanceTo([cand.lat,cand.lon]); if(d < HOTSPOT_MIN_CENTER_SEP_M){ tooClose=true; break; } }
+    while(true){
+      let best=null, bestIdx=-1;
+      for(let i=0;i<pool.length;i++){
+        if(!pool[i]) continue;
+        const cand=evaluateCenter(i); if(!cand) continue;
+        let tooClose=false; for(const prev of selected){ if(L.latLng(prev.lat,prev.lon).distanceTo([cand.lat,cand.lon]) < HOTSPOT_MIN_CENTER_SEP_M){ tooClose=true; break; } }
         if(tooClose) continue;
-        if(!best || cand.count>best.count || (cand.count===best.count && cand.avgDist<best.avgDist)) best=cand;
+        if(!best || cand.count>best.count || (cand.count===best.count && cand.avgDist<best.avgDist)){ best=cand; bestIdx=i; }
       }
-      if(best) selected.push(best); else break;
+      if(!best) break;
+      selected.push(best);
+      // Remove pings consumed by this cluster so they are not reused
+      const cLL=L.latLng(best.lat,best.lon);
+      for(let i=0;i<pool.length;i++){ if(pool[i] && cLL.distanceTo([pool[i].lat,pool[i].lon])<=HOTSPOT_RADIUS_M) pool[i]=null; }
     }
     hotspotData=selected; saveHotspot(selected); updateHotspotVisibility();
   }
