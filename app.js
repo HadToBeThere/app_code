@@ -1596,11 +1596,11 @@ startRequestsListeners(currentUser.uid);
       // 🎯 Light red circle with no border, same translucency
       const circle = L.circle([data.lat, data.lon], { 
         radius: HOTSPOT_RADIUS_M, 
-        color: 'transparent', // 🎯 No rim/border
-        weight: 0, // 🎯 No border weight
-        opacity: 0, // 🎯 No border opacity
-        fillColor: '#ff6b6b', // 🎯 Light red color
-        fillOpacity: .18, // 🎯 Same translucency as before
+        color: '#ff0000',
+        weight: 3,
+        opacity: 0.8,
+        fillColor: '#ff6b6b',
+        fillOpacity: 0.35,
         pane: 'hotspotPane' 
       }).addTo(map);
       hotspotLayers.push(circle);
@@ -2483,7 +2483,7 @@ startRequestsListeners(currentUser.uid);
     } else {
       markers.get(p.id).setIcon(icon);
     }
-    // 🔥 PERFORMANCE: Removed immediate hotspot recompute - it's debounced separately and expensive
+    scheduleHotspotRecompute();
   }
   function removeMarker(id){ const m=markers.get(id); if(m){ map.removeLayer(m); markers.delete(id); } }
   
@@ -2566,8 +2566,7 @@ startRequestsListeners(currentUser.uid);
     } else if(typeof recomputePotw === 'function') {
       recomputePotw().catch(console.error);
     }
-    // 🔥 PERFORMANCE: Only recompute hotspot every 5 seconds max (debounced separately)
-    // Removed immediate hotspot recompute - it's expensive and runs on every ping update
+    scheduleHotspotRecompute();
   }, e=>{ console.error(e); showToast((e.code||'error')+': '+(e.message||'live error')); });
 
   }
