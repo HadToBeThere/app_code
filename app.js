@@ -1577,7 +1577,7 @@ startRequestsListeners(currentUser.uid);
   // Hotspot overlay pane (below markers, above inner overlay)
   const HOTSPOT_RADIUS_M = 160;
   const HOTSPOT_MIN_CENTER_SEP_M = 150;
-  const HOTSPOT_MIN_CLUSTER_SIZE = 2; // minimum pings to form a hotspot
+  const HOTSPOT_MIN_CLUSTER_SIZE = 1; // even a single ping forms a hotspot
   try{ map.createPane('hotspotPane'); map.getPane('hotspotPane').style.zIndex = 500; }catch(_){ }
   let hotspotLayers=[], hotspotData=[], hotspotTimer=null;
   // Gate: do not render hotspots until intro animation completes
