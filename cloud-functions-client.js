@@ -166,6 +166,34 @@ async function rejectFriendRequestSecure(requestId) {
 /**
  * Remove friend (atomic - removes from both users)
  */
+/**
+ * Cancel outgoing friend request
+ */
+async function cancelFriendRequestSecure(requestId) {
+  try {
+    const cancelFriendRequest = getFunctions().httpsCallable('cancelFriendRequest');
+    const result = await cancelFriendRequest({ requestId });
+    return result.data;
+  } catch (error) {
+    console.error('Error cancelling friend request:', error);
+    throw new Error(error.message || 'Failed to cancel request');
+  }
+}
+
+/**
+ * Gift points to a friend
+ */
+async function giftPointsSecure(data) {
+  try {
+    const giftPoints = getFunctions().httpsCallable('giftPoints');
+    const result = await giftPoints(data);
+    return result.data;
+  } catch (error) {
+    console.error('Error gifting points:', error);
+    throw new Error(error.message || 'Failed to gift points');
+  }
+}
+
 async function removeFriendSecure(friendUid) {
   try {
     const removeFriend = getFunctions().httpsCallable('removeFriend');

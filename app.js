@@ -5314,7 +5314,7 @@ startRequestsListeners(currentUser.uid);
       if(myPingsList.style.display === 'none'){
         myPingsList.style.display = 'block';
         toggleMyPingsBtn.textContent = 'Hide';
-        if(!myPingsLoaded) await loadMyPings();
+        await loadMyPings(); // Always refresh
       } else {
         myPingsList.style.display = 'none';
         toggleMyPingsBtn.textContent = 'Show';

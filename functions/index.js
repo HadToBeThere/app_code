@@ -664,6 +664,69 @@ exports.rejectFriendRequest = functions.https.onCall(async (data, context) => {
 });
 
 // ============================================
+// CANCEL FRIEND REQUEST
+// ============================================
+exports.cancelFriendRequest = functions.https.onCall(async (data, context) => {
+  if (!context.auth) throw new functions.https.HttpsError('unauthenticated', 'Must be signed in');
+  const uid = context.auth.uid;
+  const { requestId } = data;
+  if (!requestId) throw new functions.https.HttpsError('invalid-argument', 'Missing requestId');
+  
+  try {
+    const reqRef = db.collection('friendRequests').doc(requestId);
+    const reqSnap = await reqRef.get();
+    if (!reqSnap.exists) throw new functions.https.HttpsError('not-found', 'Request not found');
+    if (reqSnap.data().from !== uid) throw new functions.https.HttpsError('permission-denied', 'Not your request');
+    await reqRef.delete();
+    return { success: true };
+  } catch (error) {
+    if (error instanceof functions.https.HttpsError) throw error;
+    throw new functions.https.HttpsError('internal', 'Failed to cancel request');
+  }
+});
+
+// ============================================
+// GIFT POINTS TO A FRIEND
+// ============================================
+exports.giftPoints = functions.https.onCall(async (data, context) => {
+  if (!context.auth) throw new functions.https.HttpsError('unauthenticated', 'Must be signed in');
+  const uid = context.auth.uid;
+  const { targetUid, amount } = data;
+  if (!targetUid || !amount || amount <= 0 || amount > 1000) {
+    throw new functions.https.HttpsError('invalid-argument', 'Invalid gift parameters');
+  }
+  if (targetUid === uid) throw new functions.https.HttpsError('invalid-argument', 'Cannot gift yourself');
+  
+  try {
+    await db.runTransaction(async (tx) => {
+      const senderRef = db.collection('users').doc(uid);
+      const receiverRef = db.collection('users').doc(targetUid);
+      const [senderSnap, receiverSnap] = await Promise.all([tx.get(senderRef), tx.get(receiverRef)]);
+      
+      if (!senderSnap.exists) throw new functions.https.HttpsError('not-found', 'Sender not found');
+      if (!receiverSnap.exists) throw new functions.https.HttpsError('not-found', 'Recipient not found');
+      
+      const senderPP = senderSnap.data().pp || 0;
+      if (senderPP < amount) throw new functions.https.HttpsError('failed-precondition', 'Not enough PPs');
+      
+      // Verify they are friends
+      const senderFriends = senderSnap.data().friendIds || [];
+      if (!senderFriends.includes(targetUid)) {
+        throw new functions.https.HttpsError('permission-denied', 'Can only gift to friends');
+      }
+      
+      tx.update(senderRef, { pp: admin.firestore.FieldValue.increment(-amount) });
+      tx.update(receiverRef, { pp: admin.firestore.FieldValue.increment(amount) });
+    });
+    
+    return { success: true };
+  } catch (error) {
+    if (error instanceof functions.https.HttpsError) throw error;
+    throw new functions.https.HttpsError('internal', 'Failed to gift points');
+  }
+});
+
+// ============================================
 // REMOVE FRIEND (Atomic - both users)
 // ============================================
 exports.removeFriend = functions.https.onCall(async (data, context) => {
