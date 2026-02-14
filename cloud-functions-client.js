@@ -8,11 +8,9 @@ let functions = null;
 
 function getFunctions() {
   if (!functions) {
-    console.log('🔧 Initializing Firebase Functions...');
     try {
       // Initialize with explicit region
       functions = firebase.app().functions('us-central1');
-      console.log('✅ Firebase Functions initialized successfully (us-central1)');
       // For local development, uncomment this line:
       // functions.useFunctionsEmulator('http://localhost:5001');
     } catch (error) {
@@ -28,11 +26,8 @@ function getFunctions() {
  */
 async function createPingSecure(data) {
   try {
-    console.log('🔧 Getting Functions instance...');
     const functionsInstance = getFunctions();
-    console.log('🔧 Creating callable reference...');
     const createPing = functionsInstance.httpsCallable('createPing');
-    console.log('🔧 Calling createPing function...');
     const result = await createPing({
       text: data.text,
       lat: data.lat,
@@ -168,5 +163,18 @@ async function rejectFriendRequestSecure(requestId) {
   }
 }
 
-console.log('✅ Cloud Functions client loaded');
+/**
+ * Remove friend (atomic - removes from both users)
+ */
+async function removeFriendSecure(friendUid) {
+  try {
+    const removeFriend = getFunctions().httpsCallable('removeFriend');
+    const result = await removeFriend({ friendUid });
+    return result.data;
+  } catch (error) {
+    console.error('Error removing friend:', error);
+    throw new Error(error.message || 'Failed to remove friend');
+  }
+}
+
 

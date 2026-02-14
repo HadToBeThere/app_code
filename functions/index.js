@@ -239,7 +239,6 @@ exports.createPing = functions.https.onCall(async (data, context) => {
       totalPings: FieldValue.increment(1)
     }, { merge: true });
     
-    console.log(`✅ Ping created: ${pingRef.id} by user ${uid}`);
     
     return { 
       success: true, 
@@ -665,6 +664,63 @@ exports.rejectFriendRequest = functions.https.onCall(async (data, context) => {
 });
 
 // ============================================
+// REMOVE FRIEND (Atomic - both users)
+// ============================================
+exports.removeFriend = functions.https.onCall(async (data, context) => {
+  if (!context.auth) {
+    throw new functions.https.HttpsError('unauthenticated', 'Must be signed in');
+  }
+  
+  const uid = context.auth.uid;
+  const { friendUid } = data;
+  
+  if (!friendUid || typeof friendUid !== 'string') {
+    throw new functions.https.HttpsError('invalid-argument', 'Missing friendUid');
+  }
+  if (friendUid === uid) {
+    throw new functions.https.HttpsError('invalid-argument', 'Cannot remove yourself');
+  }
+  
+  try {
+    // Atomic transaction: remove from both users' friendIds arrays
+    await db.runTransaction(async (tx) => {
+      const userRef = db.collection('users').doc(uid);
+      const friendRef = db.collection('users').doc(friendUid);
+      const [userSnap, friendSnap] = await Promise.all([tx.get(userRef), tx.get(friendRef)]);
+      
+      if (!userSnap.exists) throw new functions.https.HttpsError('not-found', 'User not found');
+      
+      // Remove each from the other's friendIds
+      const userFriends = (userSnap.data().friendIds || []).filter(id => id !== friendUid);
+      const friendFriends = friendSnap.exists ? (friendSnap.data().friendIds || []).filter(id => id !== uid) : [];
+      
+      tx.update(userRef, { friendIds: userFriends });
+      if (friendSnap.exists) {
+        tx.update(friendRef, { friendIds: friendFriends });
+      }
+    });
+    
+    // Clean up any lingering friend request docs
+    try {
+      const ids = [uid, friendUid].sort();
+      const pairIds = [ids[0] + '_' + ids[1], ids[1] + '_' + ids[0]];
+      for (const pairId of pairIds) {
+        const reqRef = db.collection('friendRequests').doc(pairId);
+        const reqSnap = await reqRef.get();
+        if (reqSnap.exists) await reqRef.delete();
+      }
+    } catch (_) { }
+    
+    return { success: true };
+    
+  } catch (error) {
+    console.error('Error removing friend:', error);
+    if (error instanceof functions.https.HttpsError) throw error;
+    throw new functions.https.HttpsError('internal', 'Failed to remove friend');
+  }
+});
+
+// ============================================
 // BACKGROUND FUNCTIONS (Triggers)
 // ============================================
 
@@ -678,7 +734,6 @@ exports.processReport = functions.firestore
     const { pingId, reportedBy, reason } = report;
     
     try {
-      console.log(`📋 Processing report for ping ${pingId} by user ${reportedBy}`);
       
       // Count total reports for this ping
       const reportsQuery = await db.collection('reports')
@@ -687,7 +742,6 @@ exports.processReport = functions.firestore
       
       const reportCount = reportsQuery.size;
       
-      console.log(`Total reports for ping ${pingId}: ${reportCount}`);
       
       // Auto-hide if threshold reached
       if (reportCount >= CONFIG.AUTO_HIDE_REPORT_THRESHOLD) {
@@ -699,7 +753,6 @@ exports.processReport = functions.firestore
           reportCount
         });
         
-        console.log(`🚫 Auto-hid ping ${pingId} due to ${reportCount} reports`);
         
         // TODO: Send notification to admin/moderators
       }
@@ -723,7 +776,6 @@ exports.cleanupExpiredPings = functions.pubsub
       const cutoffTimestamp = Timestamp.fromDate(cutoffTime);
       const nowTs = Timestamp.fromDate(now);
 
-      console.log(`🧹 Cleaning up pings. Now=${now.toISOString()} fallbackCutoff(24h)=${cutoffTime.toISOString()}`);
 
       let totalDeleted = 0;
 
@@ -755,7 +807,6 @@ exports.cleanupExpiredPings = functions.pubsub
         await batch2.commit();
       }
 
-      console.log(`✅ Deleted ${totalDeleted} expired pings`);
       return null;
     } catch (error) {
       console.error('Error cleaning up expired pings:', error);
@@ -770,7 +821,6 @@ exports.updatePingOfTheWeek = functions.pubsub
   .schedule('every 1 hours')
   .onRun(async (context) => {
     try {
-      console.log('🏆 Updating Ping of the Week...');
       
       // Get current week identifier
       const now = new Date();
@@ -791,7 +841,6 @@ exports.updatePingOfTheWeek = functions.pubsub
         .get();
       
       if (pingsQuery.empty) {
-        console.log('No eligible pings this week');
         return null;
       }
       
@@ -824,7 +873,6 @@ exports.updatePingOfTheWeek = functions.pubsub
           updatedAt: FieldValue.serverTimestamp()
         });
         
-        console.log(`✅ Updated POTW: ${topPing.id} with score ${topScore}`);
       }
       
       return null;
@@ -839,7 +887,6 @@ exports.updatePingOfTheWeek = functions.pubsub
  */
 exports.onUserCreated = functions.auth.user().onCreate(async (user) => {
   try {
-    console.log(`👤 New user created: ${user.uid}`);
     
     // Create user document if it doesn't exist
     const userRef = db.collection('users').doc(user.uid);
@@ -867,7 +914,6 @@ exports.onUserCreated = functions.auth.user().onCreate(async (user) => {
  */
 exports.onUserDeleted = functions.auth.user().onDelete(async (user) => {
   try {
-    console.log(`🗑️ User deleted: ${user.uid}`);
     
     // Delete user data (GDPR compliance)
     const batch = db.batch();
@@ -885,7 +931,6 @@ exports.onUserDeleted = functions.auth.user().onDelete(async (user) => {
     
     await batch.commit();
     
-    console.log(`✅ Cleaned up data for user ${user.uid}`);
     
     return null;
   } catch (error) {
@@ -894,5 +939,4 @@ exports.onUserDeleted = functions.auth.user().onDelete(async (user) => {
   }
 });
 
-console.log('🚀 Cloud Functions loaded successfully');
 

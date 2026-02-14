@@ -175,65 +175,6 @@
            lon <= bounds.getEast() + lngDiff;
   };
   
-  // ============================================
-  // 8. BATCH NSFW CHECKS (don't block UI)
-  // ============================================
-  window.NSFWQueue = class {
-    constructor() {
-      this.queue = [];
-      this.processing = false;
-      this.results = new Map();
-    }
-    
-    async add(pingId, imageUrl, videoUrl) {
-      if (this.results.has(pingId)) {
-        return this.results.get(pingId);
-      }
-      
-      return new Promise((resolve) => {
-        this.queue.push({ pingId, imageUrl, videoUrl, resolve });
-        this.processQueue();
-      });
-    }
-    
-    async processQueue() {
-      if (this.processing || this.queue.length === 0) return;
-      
-      this.processing = true;
-      const batchSize = window.PERFORMANCE_CONFIG.NSFW_CHECK_BATCH_SIZE;
-      
-      while (this.queue.length > 0) {
-        const batch = this.queue.splice(0, batchSize);
-        
-        await Promise.all(batch.map(async (item) => {
-          try {
-            // Actual NSFW check here (if needed)
-            const result = false; // Placeholder
-            this.results.set(item.pingId, result);
-            item.resolve(result);
-          } catch (error) {
-            console.error('NSFW check error:', error);
-            this.results.set(item.pingId, false);
-            item.resolve(false);
-          }
-        }));
-        
-        // Delay between batches to not block UI
-        if (this.queue.length > 0) {
-          await new Promise(r => setTimeout(r, window.PERFORMANCE_CONFIG.NSFW_CHECK_DELAY));
-        }
-      }
-      
-      this.processing = false;
-    }
-    
-    clear() {
-      this.queue = [];
-      this.results.clear();
-    }
-  };
-  
-  window.nsfwQueue = new window.NSFWQueue();
   
   // ============================================
   // 9. MEMORY MONITORING & AUTO-CLEANUP
@@ -291,9 +232,7 @@
       }
       
       // Clear NSFW queue results
-      if (window.nsfwQueue) {
-        window.nsfwQueue.clear();
-      }
+
       
       // Force garbage collection (if available)
       if (window.gc) {

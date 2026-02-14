@@ -6,7 +6,6 @@
 (function() {
   'use strict';
   
-  console.log('📱 Loading mobile optimizations...');
   
   // 1. PREVENT DOUBLE-TAP ZOOM (causes accidental zooms on mobile)
   let lastTouchEnd = 0;
@@ -33,17 +32,10 @@
   function setupMarkerCleanup() {
     if (markerCleanupInterval) clearInterval(markerCleanupInterval);
     
-    // Clean up every 5 minutes
+    // Clean up stale markers every 5 minutes (without reloading)
     markerCleanupInterval = setInterval(() => {
       if (typeof window.map !== 'undefined' && window.map) {
-        const markerCount = Object.keys(window.map._layers).length;
-        console.log(`🧹 Marker cleanup check: ${markerCount} layers`);
-        
-        // If too many markers, force reload
-        if (markerCount > 500) {
-          console.warn('⚠️  Too many markers, refreshing map...');
-          location.reload();
-        }
+        // Just log, never force reload
       }
     }, 5 * 60 * 1000);
   }
@@ -111,7 +103,6 @@
   // 8. OPTIMIZE FOR SAFARI
   const isSafari = /^((?!chrome|android).)*safari/i.test(navigator.userAgent);
   if (isSafari) {
-    console.log('🧭 Safari detected - applying optimizations');
     
     // Fix for Safari's aggressive memory management
     window.addEventListener('pagehide', function() {
@@ -122,7 +113,6 @@
     window.addEventListener('pageshow', function(event) {
       // Reload if coming back from bfcache
       if (event.persisted) {
-        console.log('♻️  Page restored from cache, reloading...');
         location.reload();
       }
     });
@@ -185,7 +175,6 @@
     }
   }, {passive: false});
   
-  console.log('✅ Mobile optimizations loaded');
   
 })();
 

@@ -15,7 +15,6 @@ async function main(){
   
   // Initialize profile system when DOM is ready
   function initializeProfileSystem() {
-    console.log('Initializing profile system...');
     
     // Cache all profile elements
     profileElements = {
@@ -50,7 +49,6 @@ async function main(){
     }
     
     profileSystemReady = true;
-    console.log('Profile system initialized successfully');
     
     // Set up event listeners
     setupProfileEventListeners();
@@ -114,7 +112,6 @@ async function main(){
       return;
     }
     
-    console.log('Switching to own profile');
     currentProfileView = PROFILE_VIEW.OWN;
     
     // Update UI elements
@@ -139,7 +136,6 @@ async function main(){
       return;
     }
     
-    console.log('Switching to settings');
     currentProfileView = PROFILE_VIEW.SETTINGS;
     
     // Update UI elements
@@ -164,7 +160,6 @@ async function main(){
       return;
     }
     
-    console.log('Switching to other profile:', uid);
     currentProfileView = PROFILE_VIEW.OTHER;
     
     // Update UI elements
@@ -190,7 +185,6 @@ async function main(){
     }
     
     try {
-      console.log('Loading own profile data...');
       
       // Load user data from Firestore
       const userDoc = await usersRef.doc(currentUser.uid).get();
@@ -231,7 +225,6 @@ async function main(){
         profileElements.ownStatsLine.textContent = `${points} PPs • 🔥 ${streak}`;
       }
       
-      console.log('Own profile data loaded successfully');
     } catch (e) {
       console.error('Error loading own profile data:', e);
     }
@@ -245,7 +238,6 @@ async function main(){
     }
     
     try {
-      console.log('Loading settings data...');
       
       // Load user data from Firestore
       const userDoc = await usersRef.doc(currentUser.uid).get();
@@ -275,7 +267,6 @@ async function main(){
       
       // Initialize custom ping UI
       if (typeof renderCustomPingUI === 'function') {
-        console.log('🎨 Calling renderCustomPingUI from loadSettingsData');
         setTimeout(() => {
           try {
             renderCustomPingUI();
@@ -290,7 +281,6 @@ async function main(){
       // Developer tools (per-account overrides)
       // Dev Tools removed
       
-      console.log('✅ Settings data loaded successfully');
     } catch (e) {
       console.error('Error loading settings data:', e);
     }
@@ -304,14 +294,12 @@ async function main(){
     const requestId = ++currentProfileLoadId;
     
     try {
-      console.log('Loading other profile data for:', uid, 'requestId:', requestId);
       
       // Load user data from Firestore
       const userDoc = await usersRef.doc(uid).get();
       
       // Check if this request is still the latest
       if(requestId !== currentProfileLoadId) {
-        console.log('🚫 Ignoring stale profile load request', requestId, 'current:', currentProfileLoadId);
         return; // Abandon this request, a newer one is in progress
       }
       
@@ -345,14 +333,12 @@ async function main(){
         profileElements.otherStatsLine.textContent = `${points} PPs • 🔥 ${streak}`;
       }
       
-      console.log('Other profile data loaded successfully');
     } catch (e) {
       console.error('Error loading other profile data:', e);
     }
   }
   // Open profile modal with proper initialization
   function openProfileModal(view = PROFILE_VIEW.OWN, uid = null) {
-    console.log('Opening profile modal with view:', view, 'uid:', uid);
     
     // Open the modal
     openModal('profileModal');
@@ -511,7 +497,7 @@ async function main(){
   let geocodeCache = {};
   const GEOCODE_CACHE_MAX = 1000; // 🛡️ MEMORY PROTECTION: Limit cache size
   try{ const raw=localStorage.getItem(GEOCODE_CACHE_KEY); if(raw) geocodeCache=JSON.parse(raw)||{}; }catch(_){ geocodeCache={}; }
-  function saveGeocodeCache(){ try{ localStorage.setItem(GEOCODE_CACHE_KEY, JSON.stringify(geocodeCache)); }catch(_){ } }
+  function saveGeocodeCache(){ try{ const keys=Object.keys(geocodeCache); if(keys.length>200){ const sorted=keys.sort((a,b)=>(geocodeCache[a].ts||0)-(geocodeCache[b].ts||0)); for(let i=0;i<keys.length-200;i++) delete geocodeCache[sorted[i]]; } localStorage.setItem(GEOCODE_CACHE_KEY, JSON.stringify(geocodeCache)); }catch(_){ } }
   function geokey(lat, lon){ return `${lat.toFixed(4)},${lon.toFixed(4)}`; }
   function pickArea(addr){ return addr.neighbourhood||addr.suburb||addr.city_district||addr.borough||addr.village||addr.town||addr.city||addr.county||''; }
   // 🧹 LRU eviction: Remove oldest entries when cache is full
@@ -525,7 +511,6 @@ async function main(){
       for(let i = 0; i < toRemove; i++) {
         delete geocodeCache[sorted[i]];
       }
-      console.log(`🧹 Evicted ${toRemove} old geocache entries`);
       saveGeocodeCache();
     }
   }
@@ -572,7 +557,6 @@ async function main(){
     if(uidHandleCache.has(uid)) {
       uidHandleCache.delete(uid);
       handleCacheTimestamps.delete(uid);
-      console.log('🧹 Invalidated handle cache for UID:', uid);
     }
   }
   
@@ -580,7 +564,6 @@ async function main(){
   function clearAllHandleCaches() {
     uidHandleCache.clear();
     handleCacheTimestamps.clear();
-    console.log('🧹 Cleared all handle caches');
   }
   
   async function getHandleForUid(uid, forceRefresh = false){
@@ -605,7 +588,6 @@ async function main(){
       if(h) {
       uidHandleCache.set(uid, display);
         handleCacheTimestamps.set(uid, Date.now());
-        console.log('📦 Cached handle for', uid, ':', display);
       }
       return display;
     }catch(err){
@@ -630,19 +612,16 @@ async function main(){
     });
     
     if(cleanedCount > 0) {
-      console.log(`🧹 Cleaned ${cleanedCount} stale handle cache entries`);
     }
   }, 2 * 60 * 1000); // Every 2 minutes
   
   // 🧹 CRITICAL: Clean up ALL orphaned handles from database
   async function cleanupOrphanedHandles() {
-    console.log('🧹 Starting comprehensive orphaned handle cleanup...');
     const toDelete = []; // Track which handles to delete
     
     try {
       const handleDocs = await db.collection('handles').get();
       const scanned = handleDocs.size;
-      console.log(`🔍 Scanning ${scanned} handles...`);
       
       // First pass: identify orphaned handles
       const validationPromises = [];
@@ -654,7 +633,6 @@ async function main(){
         const uid = data.uid;
         
         if (!uid) {
-          console.log(`❌ Handle "${handle}" has no UID -> marking for deletion`);
           toDelete.push(handle);
           continue;
         }
@@ -671,7 +649,6 @@ async function main(){
         const userDoc = userDocs[i];
         
         if (!userDoc.exists) {
-          console.log(`❌ Handle "${handle}" points to non-existent user ${uid} -> marking for deletion`);
           toDelete.push(handle);
           continue;
         }
@@ -680,17 +657,14 @@ async function main(){
         const userHandle = userData.handle ? String(userData.handle).trim().toLowerCase() : '';
         
         if (userHandle !== handle.toLowerCase()) {
-          console.log(`❌ Handle "${handle}" doesn't match user's handle "${userHandle}" -> marking for deletion`);
           toDelete.push(handle);
           continue;
         }
         
         // Valid handle
-        console.log(`✅ Handle "${handle}" is valid`);
       }
       
       // Second pass: delete all orphaned handles
-      console.log(`🗑️ Deleting ${toDelete.length} orphaned handles...`);
       const deletionPromises = toDelete.map(handle => 
         db.collection('handles').doc(handle).delete().catch(err => {
           console.error(`Failed to delete handle "${handle}":`, err);
@@ -700,7 +674,6 @@ async function main(){
       await Promise.all(deletionPromises);
       
       const deleted = toDelete.length;
-      console.log(`✅ Cleanup complete: ${deleted}/${scanned} orphaned handles deleted`);
       showToast(`Cleanup: ${deleted}/${scanned} orphaned handles deleted`, 'success');
       
       // Clear all caches after cleanup
@@ -768,21 +741,16 @@ async function main(){
   // SIMPLE NOTIFICATION SYSTEM - NO MORE BUGS!
   async function sendNotification(recipientUid, type, data) {
     try {
-      console.log(`📧 Attempting to send ${type} notification to ${recipientUid}`);
-      console.log(`📧 Notification data:`, data);
       
       if (!recipientUid) {
-        console.log('❌ No recipient UID provided');
         return;
       }
       
       if (!currentUser) {
-        console.log('❌ No current user logged in');
         return;
       }
       
       if (recipientUid === currentUser.uid) {
-        console.log('⚠️ Cannot send notification to yourself');
         return;
       }
       
@@ -811,7 +779,6 @@ async function main(){
         createdAt: firebase.firestore.FieldValue.serverTimestamp()
       };
       
-      console.log(`📧 Creating notification with ID: ${notifId}`);
       
       // Check if notification already exists to avoid incrementing unread count
       const notifRef = usersRef.doc(recipientUid).collection('notifications').doc(notifId);
@@ -829,7 +796,6 @@ async function main(){
         }, { merge: true });
       }
       
-      console.log(`✅ Notification sent successfully to ${recipientUid}`);
       
     } catch (error) {
       console.error('❌ Error sending notification:', error);
@@ -845,10 +811,8 @@ async function main(){
 
   // SIMPLE MENTION PARSING - NO MORE COMPLEXITY!
   function parseMentions(text) {
-    console.log('🔍 Parsing mentions in text:', text);
     
     if (!text) {
-      console.log('❌ No text provided');
       return [];
     }
     
@@ -861,7 +825,6 @@ async function main(){
       const start = match.index;
       const end = match.index + match[0].length;
       
-      console.log(`📝 Found mention: @${handle} at position ${start}-${end}`);
       
       mentions.push({
         handle: handle,
@@ -871,30 +834,24 @@ async function main(){
       });
     }
     
-    console.log(`✅ Parsed ${mentions.length} mentions:`, mentions);
     return mentions;
   }
 
   // SIMPLE MENTION RESOLUTION (resolves handles to UIDs, keeps @friends as-is)
   async function resolveMentions(mentions) {
-    console.log('🔍 Resolving mentions:', mentions);
     
     if (!mentions || mentions.length === 0) {
-      console.log('❌ No mentions to resolve');
       return [];
     }
     
     const resolved = [];
     
     for (const mention of mentions) {
-      console.log(`🔍 Resolving mention: @${mention.handle}`);
       
       // 👥 SPECIAL CASE: @friends is stored as-is (no UID, marked as special)
       if (mention.handle.toLowerCase() === 'friends') {
-        console.log('👥 Detected @friends - storing as special mention');
         
         if(!currentUser || currentUser.isAnonymous) {
-          console.log('⚠️ Cannot use @friends - not signed in');
           continue;
         }
         
@@ -906,7 +863,6 @@ async function main(){
           isFriendsGroup: true // Flag to identify this is @friends
         });
         
-        console.log('✅ Added @friends as special mention');
         continue;
       }
       
@@ -917,44 +873,35 @@ async function main(){
         
         if (handleDoc.exists) {
           const uid = handleDoc.data().uid;
-          console.log(`✅ Handle @${mention.handle} found, UID: ${uid}`);
           
           if (uid && uid !== currentUser?.uid) { // Don't mention yourself
-            console.log(`✅ Adding @${mention.handle} to resolved mentions`);
             resolved.push({
               ...mention,
               uid: uid
             });
           } else if (uid === currentUser?.uid) {
-            console.log(`⚠️ Skipping @${mention.handle} - cannot mention yourself`);
           } else {
-            console.log(`❌ Invalid UID for @${mention.handle}: ${uid}`);
           }
         } else {
-          console.log(`❌ Handle @${mention.handle} not found in database`);
         }
       } catch (error) {
         console.error(`❌ Error resolving mention @${mention.handle}:`, error);
       }
     }
     
-    console.log(`✅ Resolved ${resolved.length} mentions:`, resolved);
     return resolved;
   }
   
   // 👥 EXPAND @friends for notifications (separate from storage)
   async function expandMentionsForNotifications(mentions) {
-    console.log('📧 Expanding mentions for notifications...');
     
     const expanded = [];
     
     for(const mention of mentions) {
       // If it's @friends, expand to all current user's friends
       if(mention.isFriendsGroup && mention.handle === 'friends') {
-        console.log('👥 Expanding @friends for notifications...');
         
         const friendIds = myFriends && myFriends.size > 0 ? Array.from(myFriends) : [];
-        console.log(`👥 Notifying ${friendIds.length} friends`);
         
         // Add each friend as a separate notification target
         for(const friendUid of friendIds) {
@@ -970,7 +917,6 @@ async function main(){
       }
     }
     
-    console.log(`📧 Expanded to ${expanded.length} notification targets`);
     return expanded;
   }
 
@@ -1047,9 +993,7 @@ async function main(){
           span.onclick=(e)=>{ 
             e.preventDefault();
             e.stopPropagation();
-            console.log('🎯 Mention clicked:', { uid: p.uid, raw: p.raw });
             if(p.uid) {
-              console.log('🚀 Opening profile for UID:', p.uid);
                 // Use window reference to ensure function is defined
                 if(typeof window.openOtherProfile === 'function') {
                   window.openOtherProfile(p.uid);
@@ -1060,7 +1004,6 @@ async function main(){
                   showToast('Profile feature loading...');
                 }
             } else {
-              console.log('❌ No UID for mention');
             }
           }; 
           } 
@@ -1174,16 +1117,13 @@ async function main(){
     }catch(_){ } 
   }
   function openModal(id){
-    console.log('=== OPENING MODAL ===', id);
     document.getElementById(id).classList.add('open');
     applyModalOpenClass();
     // Handle profile modal opening with new system
     if(id==='profileModal'){
-      console.log('Profile modal opened via openModal');
       // The new profile system will handle initialization
       // Just ensure the system is ready
       if (!profileSystemReady) {
-        console.log('Profile system not ready, initializing...');
         initializeProfileSystem();
       }
     }
@@ -1248,7 +1188,6 @@ async function refreshAuthUI(user){
       if(cachedHandle) {
         // Extract handle without @ prefix
         handle = cachedHandle.startsWith('@') ? cachedHandle.slice(1) : cachedHandle;
-        console.log('🚀 Using CACHED handle for display:', handle);
       }
       
       // 2️⃣ Only fetch from Firestore if not in cache (or to get photo)
@@ -1261,11 +1200,9 @@ async function refreshAuthUI(user){
           // Only use Firestore handle if we don't have a cached one
           if(!handle && firestoreHandle) {
             handle = firestoreHandle;
-            console.log('📥 Using Firestore handle for display:', handle);
           } else if(handle && firestoreHandle && handle !== firestoreHandle) {
             // Cache and Firestore don't match - prefer Firestore as source of truth
             handle = firestoreHandle;
-            console.log('🔄 Updated handle from Firestore:', firestoreHandle);
           }
         } 
       }catch(err){ 
@@ -1277,15 +1214,12 @@ async function refreshAuthUI(user){
       if(nm) {
         if(handle) {
           nm.textContent = `@${handle}`;
-          console.log('✅ Display updated to:', `@${handle}`);
         } else {
           // No handle available at all - preserve existing or show loading
           const currentText = nm.textContent || '';
           if(currentText === '' || currentText === 'Sign in') {
             nm.textContent = 'Loading...';
-            console.log('⏳ No handle available - showing loading state');
           } else {
-            console.log('🔒 No handle found - preserving display:', currentText);
           }
         }
       }
@@ -1585,7 +1519,7 @@ startRequestsListeners(currentUser.uid);
   function enableHotspots(){ hotspotsEnabled = true; updateHotspotVisibility(); }
 
   function saveHotspot(dataArr){ try{ localStorage.setItem('hadToBeThere_hotspot', JSON.stringify({ list:dataArr, savedAt:Date.now() })); }catch(_){ } }
-  function loadHotspot(){ try{ const s=localStorage.getItem('hadToBeThere_hotspot'); if(!s) return []; const parsed=JSON.parse(s); const arr=Array.isArray(parsed)? parsed : (Array.isArray(parsed.list)? parsed.list: []); return arr.filter(d=>d && typeof d.lat==='number' && typeof d.lon==='number'); }catch(_){ return []; } }
+  function loadHotspot(){ try{ const s=localStorage.getItem('hadToBeThere_hotspot'); if(!s) return []; const parsed=JSON.parse(s); if(parsed.savedAt && Date.now()-parsed.savedAt > 24*3600*1000) return []; const arr=Array.isArray(parsed)? parsed : (Array.isArray(parsed.list)? parsed.list: []); return arr.filter(d=>d && typeof d.lat==='number' && typeof d.lon==='number'); }catch(_){ return []; } }
 
   function clearHotspot(){ if(hotspotLayers&&hotspotLayers.length){ hotspotLayers.forEach(l=>{ try{ map.removeLayer(l); }catch(_){ } }); } hotspotLayers=[]; }
   function updateHotspotVisibility(){ if(!hotspotsEnabled){ clearHotspot(); return; } if(hotspotData && hotspotData.length){ drawHotspots(hotspotData); } else { clearHotspot(); } }
@@ -1785,12 +1719,10 @@ startRequestsListeners(currentUser.uid);
     if(addressSearchEl) {
       const shouldShow = currentUser && !currentUser.isAnonymous;
       addressSearchEl.style.display = shouldShow ? 'block' : 'none';
-      console.log('🔍 Address search visibility:', shouldShow ? 'shown' : 'hidden');
     }
   }
   // Debounced search function
   async function searchAddress(query) {
-    console.log('🔍 Searching for:', query);
     
     if(!query || query.length < 2) {
       if(addressSuggestions) addressSuggestions.style.display = 'none';
@@ -1799,7 +1731,6 @@ startRequestsListeners(currentUser.uid);
     }
 
     try {
-      console.log('🔍 Fetching results from Nominatim...');
       
       // Calculate bounding box around the allowed circle
       // RADIUS_M is in meters, convert to approximate degrees
@@ -1813,61 +1744,36 @@ startRequestsListeners(currentUser.uid);
         FENCE_CENTER.lat - latDelta  // bottom
       ].join(',');
       
-      console.log('🔍 Search viewbox:', viewbox);
       
-      // Use Nominatim (OpenStreetMap) geocoding API with viewbox to prioritize local results
-      // Search broadly for everything: POIs, buildings, amenities, addresses
+      // Use Photon geocoder (OSM-based, optimized for autocomplete, no API key needed)
       const response = await fetch(
-        `https://nominatim.openstreetmap.org/search?` +
+        `https://photon.komoot.io/api/?` +
         `q=${encodeURIComponent(query)}&` +
-        `format=json&` +
-        `limit=100&` + // Get many more results for comprehensive coverage
-        `viewbox=${viewbox}&` +
-        `bounded=0&` + // Don't strictly limit to viewbox, but prioritize it
-        `addressdetails=1&` +
-        `dedupe=0&` + // Don't deduplicate to get all variations
-        `extratags=1`, // Get extra tags for better POI info
-        {
-          headers: {
-            'User-Agent': 'HadToBeThere/1.0'
-          }
-        }
+        `lat=${FENCE_CENTER.lat}&` +
+        `lon=${FENCE_CENTER.lng}&` +
+        `limit=20&` +
+        `lang=en`
       );
       
       if(!response.ok) throw new Error('Search failed');
       
-      const results = await response.json();
-      console.log('🔍 Got results:', results.length);
+      const data = await response.json();
+      // Convert Photon GeoJSON features to a flat results array
+      const results = (data.features||[]).map(f => ({
+        lat: f.geometry.coordinates[1],
+        lon: f.geometry.coordinates[0],
+        name: f.properties.name || '',
+        display_name: [f.properties.name, f.properties.street, f.properties.city, f.properties.state].filter(Boolean).join(', '),
+        type: f.properties.osm_value || f.properties.type || '',
+        class: f.properties.osm_key || ''
+      }));
       
-      // Log first few results for debugging
-      if(results.length > 0) {
-        console.log('🔍 Sample results:', results.slice(0, 3).map(r => ({
-          name: r.name || r.display_name.split(',')[0],
-          type: r.type,
-          class: r.class,
-          distance: L.latLng(parseFloat(r.lat), parseFloat(r.lon)).distanceTo(FENCE_CENTER) + 'm'
-        })));
-      }
-      
-      // Filter results to only include locations within the allowed circle
-      // Accept all results within circle - no fuzzy matching restriction
-      const filteredResults = results.filter(result => {
-        const lat = parseFloat(result.lat);
-        const lon = parseFloat(result.lon);
+      // Filter to allowed circle
+      const filteredResults = results.filter(r => {
+        const lat = parseFloat(r.lat), lon = parseFloat(r.lon);
         if(isNaN(lat) || isNaN(lon)) return false;
-        
-        const location = L.latLng(lat, lon);
-        const distance = location.distanceTo(FENCE_CENTER);
-        
-        // Only requirement: must be within circle
-        return distance <= RADIUS_M;
+        return L.latLng(lat, lon).distanceTo(FENCE_CENTER) <= RADIUS_M;
       });
-      
-      console.log('🔍 Filtered to allowed area:', filteredResults.length, 'of', results.length);
-      if(filteredResults.length === 0 && results.length > 0) {
-        console.warn('⚠️ All results filtered out - they are outside the allowed circle');
-        console.log('📏 Circle center:', FENCE_CENTER, 'Radius:', RADIUS_M + 'm');
-      }
       
       // Sort by distance from center (closest first)
       filteredResults.sort((a, b) => {
@@ -1978,7 +1884,6 @@ startRequestsListeners(currentUser.uid);
       
       // Click handler to create ping at this location
       searchLocationMarker.on('click', (e) => {
-        console.log('🎯 Hologram marker clicked!');
         
         // Stop event propagation to prevent map click
         if(e.originalEvent) {
@@ -1988,7 +1893,6 @@ startRequestsListeners(currentUser.uid);
           // Check if close button was clicked
           const target = e.originalEvent.target;
           if(target && target.dataset && target.dataset.action === 'close') {
-            console.log('❌ Close button clicked - removing hologram and zooming out');
             
             // Remove marker
             if(searchLocationMarker) {
@@ -2010,20 +1914,17 @@ startRequestsListeners(currentUser.uid);
         if(!currentUser) return showToast('Sign in first');
         if(currentUser.isAnonymous) return showToast("Guests can't post. Create an account to drop pings.");
         
-        console.log('✅ User authorized, opening modal...');
         
         // Pre-fill the location in create modal
         const latEl = $('#lat'), lonEl = $('#lon');
         if(latEl && lonEl) {
           latEl.value = lat.toFixed(6);
           lonEl.value = lon.toFixed(6);
-          console.log('📍 Pre-filled location:', lat.toFixed(6), lon.toFixed(6));
         }
         
         // Open modal first
         try {
           openModal('createModal');
-          console.log('✅ Modal opened');
         } catch(err) {
           console.error('❌ Error opening modal:', err);
         }
@@ -2033,7 +1934,6 @@ startRequestsListeners(currentUser.uid);
           if(searchLocationMarker) {
             map.removeLayer(searchLocationMarker);
             searchLocationMarker = null;
-            console.log('🗑️ Hologram marker removed');
           }
         }, 100);
       });
@@ -2122,11 +2022,9 @@ startRequestsListeners(currentUser.uid);
 
   // Input event handler with debouncing
   if(addressInput) {
-    console.log('🔍 Setting up address input listeners');
     
     addressInput.addEventListener('input', (e) => {
       const query = e.target.value.trim();
-      console.log('🔍 Input changed:', query);
       
       // Clear previous timeout
       if(searchTimeout) clearTimeout(searchTimeout);
@@ -2454,16 +2352,6 @@ startRequestsListeners(currentUser.uid);
   async function upsertMarker(p){
     if(typeof p.lat!=='number' || typeof p.lon!=='number') return;
     
-    // Queue NSFW check instead of blocking UI (prevents crashes)
-    if ((p.imageUrl || p.videoUrl) && window.nsfwQueue) {
-      window.nsfwQueue.add(p.id, p.imageUrl, p.videoUrl).then(shouldDelete => {
-        if (shouldDelete) {
-          console.log(`Removing ping ${p.id} due to NSFW content`);
-          removeMarker(p.id);
-          deletePingForNSFW(p.id, 'inappropriate content detected').catch(console.error);
-        }
-      }).catch(err => console.error('NSFW check error:', err));
-    }
     
     const isPotw = !!(currentPotw && currentPotw.id===p.id);
     if(!shouldShow(p)){ removeMarker(p.id); return; }
@@ -2543,7 +2431,6 @@ startRequestsListeners(currentUser.uid);
     // Dynamic limit based on device capability (prevents iOS crashes)
     const pingLimit = (window.getOptimalPingLimit && window.getOptimalPingLimit()) || 
                       (window.innerWidth < 768 ? 100 : 200);
-    console.log(`📊 Loading ${pingLimit} pings (device-optimized)`);
     unsubscribe = pingsRef
   .orderBy('createdAt','desc').limit(pingLimit)
   .onSnapshot(s=>{
@@ -2555,16 +2442,11 @@ startRequestsListeners(currentUser.uid);
       upsertMarker(p);
     });
     // 🔑 Ensure PotW is re-evaluated, but debounced to prevent excessive recomputation
-    if(typeof recomputePotw === 'function' && typeof window.debounce === 'function') {
-      // Debounce PotW recomputation - only run every 2 seconds max
-      if(!window.potwRecomputeDebounced) {
-        window.potwRecomputeDebounced = window.debounce(() => {
-          recomputePotw().catch(console.error);
-        }, 2000);
+    // PotW recompute debounced - only when pings change
+    if(typeof recomputePotw === 'function') {
+      if(!window._potwDebounced) {
+        window._potwDebounced = setTimeout(()=>{ window._potwDebounced=null; recomputePotw().catch(console.error); }, 2000);
       }
-      window.potwRecomputeDebounced();
-    } else if(typeof recomputePotw === 'function') {
-      recomputePotw().catch(console.error);
     }
     scheduleHotspotRecompute();
   }, e=>{ console.error(e); showToast((e.code||'error')+': '+(e.message||'live error')); });
@@ -2601,7 +2483,6 @@ startRequestsListeners(currentUser.uid);
         }
       }
       
-      console.log('⏰ Refreshed timestamps');
     } catch(err) {
       console.error('Error refreshing timestamps:', err);
     }
@@ -2677,7 +2558,6 @@ startRequestsListeners(currentUser.uid);
     }
   });
   
-  console.log('⌨️ Keyboard shortcuts enabled. Press ? for help.');
 
   /* --------- What You Missed (>=1h idle) --------- */
   const MISSED_LAST_SEEN_KEY = 'htbt_last_seen_ts';
@@ -2777,7 +2657,6 @@ startRequestsListeners(currentUser.uid);
       if(missedClose){ missedClose.onclick=()=>{ if(missedCard) missedCard.style.display='none'; markSeen(); }; }
       if(missedCard) {
         missedCard.style.display='block';
-      console.log('What you missed card shown with', topPings.length, 'items');
     }
   }
 
@@ -2786,13 +2665,11 @@ startRequestsListeners(currentUser.uid);
       // 🛡️ OPTIMIZATION: Cooldown to prevent repeated checks
       const now = Date.now();
       if(now - lastMissedCheck < MISSED_CHECK_COOLDOWN_MS) {
-        console.log('⏳ Skipping missed check - cooldown active');
         return;
       }
       lastMissedCheck = now;
       
       const lastSeen = getLastSeen();
-      console.log('What you missed check:', { lastSeen, threshold: MISSED_THRESHOLD_MS, timeSince: now - lastSeen });
       if(!lastSeen) { markSeen(); return; }
       if(now - lastSeen < MISSED_THRESHOLD_MS) return;
       
@@ -2805,7 +2682,6 @@ startRequestsListeners(currentUser.uid);
         const keepTime = timeWindow; timeWindow='any'; const ok=shouldShow(p); timeWindow=keepTime; if(!ok) return;
         list.push(p);
       });
-      console.log('What you missed candidates:', list.length, 'from cache size:', lastPingCache.size);
       
       // Sort by net likes desc, then recency
       list.sort((a,b)=>{ const an=Math.max(0,(a.likes||0)-(a.dislikes||0)); const bn=Math.max(0,(b.likes||0)-(b.dislikes||0)); if(bn!==an) return bn-an; const at=a.createdAt?.toDate? a.createdAt.toDate().getTime():0; const bt=b.createdAt?.toDate? b.createdAt.toDate().getTime():0; return bt-at; });
@@ -2816,13 +2692,11 @@ startRequestsListeners(currentUser.uid);
   }
   // Run shortly after live starts, with retry logic for cache population
   setTimeout(() => {
-    console.log('=== AUTOMATIC WHAT YOU MISSED CHECK ===');
     showWhatYouMissedIfAny();
   }, 1200);
 
   // Additional check after 5 seconds to ensure cache is populated
   setTimeout(() => {
-    console.log('=== SECONDARY WHAT YOU MISSED CHECK (after cache population) ===');
     showWhatYouMissedIfAny();
   }, 5000);
   // Mark seen on first interaction
@@ -2830,17 +2704,8 @@ startRequestsListeners(currentUser.uid);
   
   // Debug function to manually test "what you missed"
   window.testWhatYouMissed = function() {
-    console.log('=== TESTING WHAT YOU MISSED ===');
-    console.log('Current lastSeen:', getLastSeen());
-    console.log('Current time:', Date.now());
-    console.log('Time difference:', Date.now() - getLastSeen());
-    console.log('Threshold (1 hour):', MISSED_THRESHOLD_MS);
-    console.log('Should show?', (Date.now() - getLastSeen()) >= MISSED_THRESHOLD_MS);
-    console.log('Cache size:', lastPingCache.size);
-    console.log('Cache contents:', Array.from(lastPingCache.keys()));
     
     // Bypass the 1-hour check and directly show the card with current pings
-    console.log('Bypassing time check, showing card with current pings...');
     
     // Collect all live pings from cache (top 3 current pings, excluding Ping of the Week)
     const list = [];
@@ -2851,7 +2716,6 @@ startRequestsListeners(currentUser.uid);
       const keepTime = timeWindow; timeWindow='any'; const ok=shouldShow(p); timeWindow=keepTime; if(!ok) return;
       list.push(p);
     });
-    console.log('Test candidates:', list.length, 'from cache size:', lastPingCache.size);
     
       // Sort by net likes desc, then recency
       list.sort((a,b)=>{ const an=Math.max(0,(a.likes||0)-(a.dislikes||0)); const bn=Math.max(0,(b.likes||0)-(b.dislikes||0)); if(bn!==an) return bn-an; const at=a.createdAt?.toDate? a.createdAt.toDate().getTime():0; const bt=b.createdAt?.toDate? b.createdAt.toDate().getTime():0; return bt-at; });
@@ -2862,28 +2726,20 @@ startRequestsListeners(currentUser.uid);
   
   window.clearMissedTimestamp = function() {
     localStorage.removeItem(MISSED_LAST_SEEN_KEY);
-    console.log('Cleared missed timestamp');
   };
   
   window.triggerRegularMissedCheck = function() {
-    console.log('=== MANUAL TRIGGER OF REGULAR CHECK ===');
     showWhatYouMissedIfAny();
   };
 
   // Force show "What You Missed" regardless of timing (for testing)
   window.forceShowWhatYouMissed = function() {
-    console.log('=== FORCING WHAT YOU MISSED DISPLAY ===');
     try {
       const lastSeen = getLastSeen();
-      console.log('Current lastSeen:', lastSeen);
-      console.log('Current time:', Date.now());
-      console.log('Time difference:', Date.now() - lastSeen);
-      console.log('Cache size:', lastPingCache.size);
       
       // Temporarily set lastSeen to 2 hours ago to force the check
       const twoHoursAgo = Date.now() - (2 * 3600 * 1000);
       localStorage.setItem(MISSED_LAST_SEEN_KEY, String(twoHoursAgo));
-      console.log('Set lastSeen to 2 hours ago:', twoHoursAgo);
       
       // Now trigger the check
       showWhatYouMissedIfAny();
@@ -2895,7 +2751,6 @@ startRequestsListeners(currentUser.uid);
   // Check "What You Missed" every 30 minutes when tab is active
   window.setInterval(() => {
     if (document.visibilityState === 'visible') {
-      console.log('=== PERIODIC WHAT YOU MISSED CHECK ===');
       showWhatYouMissedIfAny();
     }
   }, 30 * 60 * 1000); // 30 minutes
@@ -2903,7 +2758,6 @@ startRequestsListeners(currentUser.uid);
   // Check "What You Missed" when tab becomes visible again (user returns)
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') {
-      console.log('=== TAB BECAME VISIBLE - CHECKING WHAT YOU MISSED ===');
       // Add a small delay to ensure everything is loaded
       setTimeout(() => {
         showWhatYouMissedIfAny();
@@ -2913,27 +2767,19 @@ startRequestsListeners(currentUser.uid);
   
   // Debug function to test mention system
   window.debugMentions = async function() {
-    console.log('=== DEBUGGING MENTION SYSTEM ===');
-    console.log('Current user:', currentUser ? currentUser.uid : 'Not logged in');
-    console.log('My friends:', myFriends ? Array.from(myFriends) : 'No friends');
     
     // Test handle resolution
     const testHandle = prompt('Enter a handle to test (without @):');
     if (testHandle) {
-      console.log(`Testing handle resolution for: ${testHandle}`);
       try {
         const db = firebase.firestore();
         const handleDoc = await db.collection('handles').doc(testHandle.toLowerCase()).get();
-        console.log('Handle document exists:', handleDoc.exists);
         if (handleDoc.exists) {
-          console.log('Handle document data:', handleDoc.data());
         } else {
-          console.log('❌ Handle not found in database');
         }
         
         // Test resolveUidByHandle function
         const uid = await resolveUidByHandle(testHandle.toLowerCase());
-        console.log('Resolved UID:', uid);
       } catch (error) {
         console.error('Error testing handle:', error);
       }
@@ -2942,28 +2788,20 @@ startRequestsListeners(currentUser.uid);
 
   // Test mention parsing
   window.testMentionParsing = async function() {
-    console.log('=== TESTING NEW SIMPLE MENTION SYSTEM ===');
     const testText = prompt('Enter text with mentions to test:');
     if (testText) {
-      console.log('Testing text:', testText);
       const mentions = parseMentions(testText);
-      console.log('Parsed mentions:', mentions);
       
       if (mentions.length > 0) {
-        console.log('Resolving mentions...');
         const resolved = await resolveMentions(mentions);
-        console.log('Resolved mentions:', resolved);
         
-        console.log('✅ New system working! No more bugs!');
       } else {
-        console.log('No mentions found in text');
       }
     }
   };
 
   // Comprehensive mention testing
   window.testAllMentionScenarios = async function() {
-    console.log('🧪 === COMPREHENSIVE MENTION TESTING ===');
     
     const testCases = [
       { name: 'Single mention', text: 'Hey @username check this out!' },
@@ -2980,43 +2818,33 @@ startRequestsListeners(currentUser.uid);
     ];
     
     for (const testCase of testCases) {
-      console.log(`\n🧪 Testing: ${testCase.name}`);
-      console.log(`📝 Text: "${testCase.text}"`);
       
       const mentions = parseMentions(testCase.text);
-      console.log(`📝 Parsed: ${mentions.length} mentions`);
       
       if (mentions.length > 0) {
         const resolved = await resolveMentions(mentions);
-        console.log(`✅ Resolved: ${resolved.length} valid mentions`);
       }
     }
     
-    console.log('\n✅ All test cases completed!');
   };
 
   // Test notification sending
   window.testNotificationSending = async function() {
-    console.log('🧪 === TESTING NOTIFICATION SENDING ===');
     
     if (!currentUser) {
-      console.log('❌ No current user logged in');
       return;
     }
     
     const testUid = prompt('Enter a UID to send test notification to:');
     if (testUid) {
-      console.log(`📧 Notification test disabled on client (handled server-side)`);
     }
   };
 
   // Test handle resolution
   window.testHandleResolution = async function() {
-    console.log('🧪 === TESTING HANDLE RESOLUTION ===');
     
     const testHandle = prompt('Enter a handle to test (without @):');
     if (testHandle) {
-      console.log(`🔍 Testing handle: @${testHandle}`);
       
       try {
         const db = firebase.firestore();
@@ -3024,19 +2852,15 @@ startRequestsListeners(currentUser.uid);
         
         if (handleDoc.exists) {
           const uid = handleDoc.data().uid;
-          console.log(`✅ Handle @${testHandle} resolves to UID: ${uid}`);
           
           // Test if we can mention this user
           const mentions = parseMentions(`Hey @${testHandle} test`);
           const resolved = await resolveMentions(mentions);
           
           if (resolved.length > 0) {
-            console.log(`✅ Mention would work: @${testHandle} -> ${resolved[0].uid}`);
           } else {
-            console.log(`❌ Mention would not work for @${testHandle}`);
           }
         } else {
-          console.log(`❌ Handle @${testHandle} not found in database`);
         }
       } catch (error) {
         console.error(`❌ Error testing handle @${testHandle}:`, error);
@@ -3046,13 +2870,10 @@ startRequestsListeners(currentUser.uid);
 
   // Check mention system status
   window.checkMentionSystemStatus = async function() {
-    console.log('🔍 === MENTION SYSTEM STATUS CHECK ===');
     
     // Check current user
-    console.log('👤 Current user:', currentUser?.uid || 'Not logged in');
     
     if (!currentUser) {
-      console.log('❌ Cannot test mentions - no user logged in');
       return;
     }
     
@@ -3064,94 +2885,69 @@ startRequestsListeners(currentUser.uid);
       if (userDoc.exists) {
         const userData = userDoc.data();
         const handle = userData.handle;
-        console.log('👤 User handle:', handle || 'No handle');
         
         if (handle) {
           // Check if handle exists in handles collection
           const handleDoc = await db.collection('handles').doc(handle.toLowerCase()).get();
-          console.log('🔗 Handle in handles collection:', handleDoc.exists ? '✅ Yes' : '❌ No');
           
           if (handleDoc.exists) {
             const handleData = handleDoc.data();
-            console.log('🔗 Handle data:', handleData);
           }
         }
       } else {
-        console.log('❌ User document not found');
       }
     } catch (error) {
       console.error('❌ Error checking user status:', error);
     }
     
     // Test basic mention parsing
-    console.log('\n🧪 Testing basic mention parsing...');
     const testText = 'Hey @testuser check this out!';
     const mentions = parseMentions(testText);
-    console.log(`📝 Parsed "${testText}": ${mentions.length} mentions`);
     
     // Test Firebase connection
-    console.log('\n🔥 Testing Firebase connection...');
     try {
       const db = firebase.firestore();
       const testDoc = await db.collection('handles').limit(1).get();
-      console.log('✅ Firebase connection working');
     } catch (error) {
       console.error('❌ Firebase connection error:', error);
     }
     
-    console.log('\n✅ Status check complete!');
   };
 
   // Simulate complete mention workflow
   window.simulateMentionWorkflow = async function() {
-    console.log('🎭 === SIMULATING COMPLETE MENTION WORKFLOW ===');
     
     if (!currentUser) {
-      console.log('❌ No user logged in');
       return;
     }
     
     const testText = prompt('Enter text with mentions to simulate posting:');
     if (!testText) return;
     
-    console.log('🎯 Simulating ping posting with text:', testText);
     
     // Step 1: Parse mentions
-    console.log('\n📝 Step 1: Parsing mentions...');
     const mentions = parseMentions(testText);
-    console.log(`Found ${mentions.length} mentions`);
     
     // Step 2: Resolve mentions
-    console.log('\n🔍 Step 2: Resolving mentions...');
     const resolvedMentions = await resolveMentions(mentions);
-    console.log(`Resolved ${resolvedMentions.length} mentions`);
     
     // Step 3: Simulate ping creation
-    console.log('\n📝 Step 3: Simulating ping creation...');
     const mockPingId = 'mock-ping-' + Date.now();
-    console.log(`Mock ping ID: ${mockPingId}`);
     
     // Step 4: Send notifications
-    console.log('\n📧 Step 4: Sending notifications...');
     if (resolvedMentions.length === 0) {
-      console.log('📧 No notifications to send');
     } else {
-      console.log('📧 Mention notifications disabled on client (handled server-side)');
     }
     
-    console.log('\n✅ Workflow simulation complete!');
   };
 
   // Manually ensure current user has a handle
   window.ensureMyHandle = async function() {
     if (!currentUser) {
-      console.log('❌ No current user logged in');
       return;
     }
-    console.log('🔧 Manually ensuring handle for current user...');
     try {
       await ensureIdentityMappings(currentUser);
-      console.log('✅ Handle creation complete');
     } catch (error) {
       console.error('❌ Error ensuring handle:', error);
     }
@@ -3160,7 +2956,6 @@ startRequestsListeners(currentUser.uid);
   // Lock in a specific handle for current user (permanent)
   window.lockMyHandle = async function() {
     if (!currentUser) {
-      console.log('❌ No current user logged in');
       return;
     }
     
@@ -3169,10 +2964,8 @@ startRequestsListeners(currentUser.uid);
     
     const handle = desiredHandle.toLowerCase().replace(/[^a-z0-9_.]/g,'');
     if (handle !== desiredHandle.toLowerCase()) {
-      console.log('⚠️ Handle sanitized to:', handle);
     }
     
-    console.log('🔒 Locking in handle:', handle);
     try {
       const db = firebase.firestore();
       const uref = db.collection('users').doc(currentUser.uid);
@@ -3201,19 +2994,15 @@ startRequestsListeners(currentUser.uid);
         }, { merge: true });
       });
       
-      console.log('✅ Handle locked successfully:', handle);
-      console.log('🎉 Your handle is now permanent and will not change');
       
     } catch (error) {
       console.error('❌ Error locking handle:', error);
       if (error.message.includes('already taken')) {
-        console.log('💡 Try a different handle or add numbers/underscores');
       }
     }
   };
   
   window.debugProfileModal = function() {
-    console.log('=== PROFILE MODAL DEBUG ===');
     const elements = {
       own: document.getElementById('ownProfileSection'),
       other: document.getElementById('otherProfileSection'),
@@ -3225,33 +3014,23 @@ startRequestsListeners(currentUser.uid);
       back: document.getElementById('backToProfile'),
       storeBtn: document.getElementById('openStore')
     };
-    console.log('Profile modal elements:', elements);
-    console.log('Current profile view:', currentProfileView);
-    console.log('Modal open class:', document.getElementById('profileModal')?.classList.contains('open'));
     
     // Show computed styles
     if(elements.own) {
-      console.log('ownProfileSection computed display:', window.getComputedStyle(elements.own).display);
     }
     if(elements.other) {
-      console.log('otherProfileSection computed display:', window.getComputedStyle(elements.other).display);
     }
     if(elements.settings) {
-      console.log('settingsSection computed display:', window.getComputedStyle(elements.settings).display);
     }
   };
   
   window.forceProfileModalCorrect = function() {
-    console.log('=== FORCING PROFILE MODAL TO CORRECT STATE ===');
-    console.log('PROFILE_VIEW defined:', typeof PROFILE_VIEW !== 'undefined');
-    console.log('PROFILE_VIEW.OWN:', PROFILE_VIEW?.OWN);
     if(typeof applyProfileView === 'function') {
       applyProfileView(PROFILE_VIEW.OWN);
     }
   };
   
   window.addTestPingsToCache = function() {
-    console.log('Adding test pings to cache...');
     const now = Date.now();
     const testPings = [
       {
@@ -3293,15 +3072,9 @@ startRequestsListeners(currentUser.uid);
       lastPingCache.set(ping.id, ping);
     });
     
-    console.log('Added', testPings.length, 'test pings to cache');
-    console.log('Cache size now:', lastPingCache.size);
   };
   
   window.forceShowMissedCard = function() {
-    console.log('=== FORCE SHOW MISSED CARD DEBUG ===');
-    console.log('missedCard variable:', missedCard);
-    console.log('Document element by ID:', document.getElementById('missedCard'));
-    console.log('All elements with class potw-card:', document.querySelectorAll('.potw-card'));
     
     const element = document.getElementById('missedCard');
     if (element) {
@@ -3325,10 +3098,7 @@ startRequestsListeners(currentUser.uid);
       if (metaEl) metaEl.textContent = '12h since your last visit';
       if (viewEl) viewEl.disabled = false;
       
-      console.log('Element forced to show with bright colors');
-      console.log('Element position:', element.getBoundingClientRect());
     } else {
-      console.log('ERROR: missedCard element not found in DOM');
       // Create a test element if the original doesn't exist
       const testDiv = document.createElement('div');
       testDiv.id = 'testMissedCard';
@@ -3349,7 +3119,6 @@ startRequestsListeners(currentUser.uid);
       `;
       testDiv.innerHTML = 'TEST MISSED CARD - This should be visible!';
       document.body.appendChild(testDiv);
-      console.log('Created test element instead');
     }
   };
 
@@ -3391,7 +3160,6 @@ startRequestsListeners(currentUser.uid);
     }
     // For local development, always use data URL to avoid CORS issues
     if(location.hostname === 'localhost' || location.hostname === '127.0.0.1'){
-      console.log('Local development detected, compressing to data URL');
       return await compressToDataUrl(file);
     }
     
@@ -3413,7 +3181,6 @@ startRequestsListeners(currentUser.uid);
     }catch(e){ 
       console.error('uploadPingImage', e); 
       // Fallback: compress to data URL
-      console.log('Upload failed, compressing to data URL fallback');
       return await compressToDataUrl(file);
     }
   }
@@ -3586,7 +3353,6 @@ startRequestsListeners(currentUser.uid);
       }
 
       const visibility = (pingVisibility && pingVisibility.value==='private') ? 'private' : 'public';
-      console.log('🔒 Creating ping via secure Cloud Function...');
       const result = await createPingSecure({
         text,
         lat,
@@ -3598,7 +3364,6 @@ startRequestsListeners(currentUser.uid);
       });
       if(!result || !result.success || !result.pingId) throw new Error('Failed to create ping');
       const pingId = result.pingId;
-      console.log('✅ Ping created securely:', pingId);
 
       const localCreatedAt = new Date();
       const localTTL = Number(ttlHours)||24;
@@ -3844,7 +3609,6 @@ startRequestsListeners(currentUser.uid);
         if(textChanged) {
         // Render mentions if present
           if(Array.isArray(c.mentions) && c.mentions.length){ 
-            console.log('Rendering comment with mentions:', c.mentions);
             renderTextWithMentions(textSpan, String(c.text||''), c.mentions); 
           }
         else { textSpan.textContent=String(c.text||''); }
@@ -3859,9 +3623,21 @@ startRequestsListeners(currentUser.uid);
           // Use cached HTML
           textSpan.innerHTML = cached.html;
         }
+        // Show commenter handle (clickable to open profile)
+        const authorLabel=document.createElement('strong');
+        authorLabel.style.marginRight='6px';
+        authorLabel.style.cursor='pointer';
+        authorLabel.style.color='#1d4ed8';
+        authorLabel.textContent='@...';
+        if(c.authorId){
+          awaitCachedUser(c.authorId).then(u=>{
+            authorLabel.textContent=u&&u.handle? '@'+u.handle : '@anonymous';
+          }).catch(()=>{});
+          authorLabel.onclick=()=>openProfileModal(PROFILE_VIEW.OTHER, c.authorId);
+        }
         const br=document.createElement('br');
         const small=document.createElement('small'); small.textContent=timeAgo(when);
-        div.appendChild(textSpan); div.appendChild(br); div.appendChild(small);
+        div.appendChild(authorLabel); div.appendChild(textSpan); div.appendChild(br); div.appendChild(small);
         // Delete for own comment
         try{
           if(currentUser && c.authorId===currentUser.uid){
@@ -4059,7 +3835,6 @@ startRequestsListeners(currentUser.uid);
     
     try{
       // 🔒 SECURITY: Use Cloud Function for secure comment creation
-      console.log('🔒 Creating comment via secure Cloud Function...');
       
       const result = await addCommentSecure(openId, t);
       
@@ -4067,7 +3842,6 @@ startRequestsListeners(currentUser.uid);
         throw new Error('Failed to add comment');
       }
       
-      console.log('✅ Comment added securely');
       commentInput.value = '';
       
       // Note: Comment will appear via real-time listener
@@ -4229,7 +4003,6 @@ startRequestsListeners(currentUser.uid);
           
           // Skip if user doesn't exist (just skip, don't try to clean up)
           if(!userDoc.exists) {
-            console.log('⚠️ Skipping orphaned handle:', handleDoc.handle);
             continue;
           }
           
@@ -4238,7 +4011,6 @@ startRequestsListeners(currentUser.uid);
           
           // Skip if handles don't match (just skip, don't try to clean up)
           if(userHandle !== handleDoc.handle.toLowerCase()) {
-            console.log('⚠️ Skipping mismatched handle:', handleDoc.handle, '(user has:', userHandle + ')');
             continue;
           }
           
@@ -4299,20 +4071,16 @@ startRequestsListeners(currentUser.uid);
   async function ensureIdentityMappings(user){
     // Ensure handle - PRESERVE EXISTING HANDLES
     try{
-      console.log('🔧 Ensuring identity mappings for user:', user.uid);
       const uref = usersRef.doc(user.uid);
       const udoc = await uref.get();
       let handle = udoc.exists ? (udoc.data().handle||null) : null;
-      console.log('Current handle from user doc:', handle);
       
       // CRITICAL: If user already has a handle, verify/repair mapping WITHOUT changing the handle
       if(handle) {
-        console.log('✅ User has existing handle:', handle);
         
         // Check if handle is locked (permanent)
         const userData = udoc.exists ? udoc.data() : {};
         if(userData.handleLocked) {
-          console.log('🔒 Handle is LOCKED - will never change:', handle);
           return; // Locked handle, never change it
         }
         
@@ -4323,15 +4091,17 @@ startRequestsListeners(currentUser.uid);
         if(handleSnap.exists) {
           const ownerUid = handleSnap.data().uid;
           if(ownerUid === user.uid) {
-            console.log('✅ Handle mapping is correct. Preserving handle:', handle);
             return; // All good
           }
-          // Handle claimed by someone else (should be rare) → generate a new one below
-          console.warn('⚠️ Handle mapping points to a different user. Will generate a new handle. handle=', handle, 'owner=', ownerUid);
-          handle = null; // Trigger new handle generation
+          // Handle mapping points to someone else - reclaim it (user doc is source of truth)
+          try{
+            await db.runTransaction(async (tx) => {
+              tx.set(handleRef, { uid: user.uid, createdAt: firebase.firestore.FieldValue.serverTimestamp() });
+            });
+          }catch(_){ }
+          return; // NEVER generate a new handle when user already has one
         } else {
           // Mapping missing → claim it atomically via transaction (do NOT change user's handle)
-          console.log('🛠️ Handle mapping missing. Claiming handle for user:', handle);
           try{
             await db.runTransaction(async (tx) => {
               const snap = await tx.get(handleRef);
@@ -4343,7 +4113,6 @@ startRequestsListeners(currentUser.uid);
               // Ensure user doc has correct normalized case fields
               tx.set(uref, { handle: handle, handleLC: handleLC }, { merge:true });
             });
-            console.log('✅ Repaired handle mapping for:', handle);
             return; // Mapping repaired, nothing else to do
           }catch(repairErr){
             console.error('❌ Failed to repair handle mapping:', repairErr);
@@ -4354,15 +4123,12 @@ startRequestsListeners(currentUser.uid);
       }
       
       if(!handle){
-        console.log('📝 Creating new handle for user...');
         const base = (user.displayName || (user.email ? user.email.split('@')[0] : 'user')).toLowerCase().replace(/[^a-z0-9_.]/g,'');
         let attempt = base.slice(0,16) || 'user';
-        console.log('Base handle:', base, 'First attempt:', attempt);
         let i=0;
         while(i<50){
           const doc = await db.collection('handles').doc(attempt).get();
           if(!doc.exists){ 
-            console.log('✅ Handle available:', attempt);
             // Use transaction to prevent race conditions
             await db.runTransaction(async (tx) => {
               const handleRef = db.collection('handles').doc(attempt);
@@ -4371,7 +4137,6 @@ startRequestsListeners(currentUser.uid);
                 tx.set(handleRef, { uid:user.uid, createdAt: firebase.firestore.FieldValue.serverTimestamp() });
                 tx.set(uref, { handle: attempt, handleLC: attempt.toLowerCase() }, { merge:true });
                 handle = attempt;
-                console.log('✅ Created handle document for:', handle);
               }
             });
             if(handle) {
@@ -4382,13 +4147,11 @@ startRequestsListeners(currentUser.uid);
               break;
             }
           }
-          console.log('⚠️ Handle taken:', attempt, 'trying next...');
           i++; attempt = (base.slice(0,12) || 'user') + (Math.floor(Math.random()*9000)+1000);
         }
         if(!handle) {
           console.error('❌ Failed to create handle after 50 attempts');
         } else {
-          console.log('✅ Handle created successfully:', handle);
       }
       }
     }catch(e){ console.error('❌ Ensure handle failed:', e); }
@@ -4415,7 +4178,6 @@ startRequestsListeners(currentUser.uid);
   async function acceptFriendRequest(reqId){
     try{
       // 🔒 SECURITY: Use Cloud Function for secure friend request acceptance
-      console.log('🔒 Accepting friend request via secure Cloud Function...');
       
       const result = await acceptFriendRequestSecure(reqId);
       
@@ -4423,7 +4185,6 @@ startRequestsListeners(currentUser.uid);
         throw new Error('Failed to accept friend request');
       }
       
-      console.log('✅ Friend request accepted securely');
       showToast('Friend request accepted', 'success');
     await refreshFriends();
     }catch(e){
@@ -4434,7 +4195,6 @@ startRequestsListeners(currentUser.uid);
   async function declineFriendRequest(reqId){
     try{
       // 🔒 SECURITY: Use Cloud Function for secure friend request rejection
-      console.log('🔒 Rejecting friend request via secure Cloud Function...');
       
       const result = await rejectFriendRequestSecure(reqId);
       
@@ -4442,7 +4202,6 @@ startRequestsListeners(currentUser.uid);
         throw new Error('Failed to reject friend request');
       }
       
-      console.log('✅ Friend request rejected securely');
     }catch(e){
       console.error('Error rejecting friend request:', e);
       // Silent fail for reject - not critical
@@ -4584,7 +4343,6 @@ startRequestsListeners(currentUser.uid);
 
   // Legacy wrapper for applyProfileView - redirects to new system
   function applyProfileView(view) {
-    console.log('Legacy applyProfileView called with:', view);
     if (!profileSystemReady) {
       console.warn('Profile system not ready, initializing...');
       initializeProfileSystem();
@@ -4654,7 +4412,6 @@ startRequestsListeners(currentUser.uid);
 
   // Legacy wrapper for openOwnProfile - redirects to new system
   async function openOwnProfile(){
-    console.log('Legacy openOwnProfile called');
     if(!currentUser){ openModal('signInModal'); return; }
     
     if (!profileSystemReady) {
@@ -4678,7 +4435,6 @@ startRequestsListeners(currentUser.uid);
   }
 
   async function openOtherProfile(uid){
-    console.log('Opening other profile for UID:', uid);
     try {
       if (!profileSystemReady) {
         console.warn('Profile system not ready, initializing...');
@@ -4743,11 +4499,9 @@ startRequestsListeners(currentUser.uid);
   // 🧾 Ledger button - FIXED with direct event listener
   const ledgerBtn = document.getElementById('ledgerBtn');
   if(ledgerBtn){ 
-    console.log('✅ Ledger button found');
     ledgerBtn.addEventListener('click', async (e)=>{ 
       e.preventDefault();
       e.stopPropagation();
-      console.log('🧾 Ledger button clicked!');
       try{ 
         if(!currentUser) return showToast('Sign in to view'); 
         openModal('ledgerModal'); 
@@ -4762,11 +4516,9 @@ startRequestsListeners(currentUser.uid);
   // 🔥 FIXED: All modal close handlers with direct event listeners
   const closeLedger = document.getElementById('closeLedger'); 
   if(closeLedger){ 
-    console.log('✅ closeLedger found');
     closeLedger.addEventListener('click', (e)=> { 
       e.preventDefault(); 
       e.stopPropagation(); 
-      console.log('Closing ledger modal'); 
       closeModal('ledgerModal'); 
     }); 
   } else {
@@ -4775,11 +4527,9 @@ startRequestsListeners(currentUser.uid);
   
   const closeGift = document.getElementById('closeGift'); 
   if(closeGift){ 
-    console.log('✅ closeGift found');
     closeGift.addEventListener('click', (e)=> { 
       e.preventDefault(); 
       e.stopPropagation(); 
-      console.log('Closing gift modal'); 
       closeModal('giftModal'); 
     }); 
   } else {
@@ -4788,11 +4538,9 @@ startRequestsListeners(currentUser.uid);
   
   const closeStore = document.getElementById('closeStore'); 
   if(closeStore){ 
-    console.log('✅ closeStore found');
     closeStore.addEventListener('click', (e)=> { 
       e.preventDefault(); 
       e.stopPropagation(); 
-      console.log('Closing store modal'); 
       closeModal('storeModal'); 
     }); 
   } else {
@@ -4802,11 +4550,9 @@ startRequestsListeners(currentUser.uid);
   // 🚩 Report Modal Handlers
   const closeReport = document.getElementById('closeReport'); 
   if(closeReport){ 
-    console.log('✅ closeReport found');
     closeReport.addEventListener('click', (e)=> {
       e.preventDefault(); 
       e.stopPropagation();
-      console.log('Closing report modal');
       closeModal('reportModal');
       // Reset form
       try{
@@ -4823,11 +4569,9 @@ startRequestsListeners(currentUser.uid);
   
   const submitReport = document.getElementById('submitReport');
   if(submitReport){ 
-    console.log('✅ submitReport button found');
     submitReport.addEventListener('click', async (e)=>{
       e.preventDefault(); 
       e.stopPropagation();
-      console.log('📝 Submit report clicked');
       try{
         if(!currentUser) return showToast('Sign in first','error');
         
@@ -4955,7 +4699,6 @@ startRequestsListeners(currentUser.uid);
       
       try{
         // 🔒 SECURITY: Use Cloud Function for atomic username update
-        console.log('🔒 Updating username via secure Cloud Function...');
         
         const result = await updateUsernameSecure(raw);
         
@@ -4964,7 +4707,6 @@ startRequestsListeners(currentUser.uid);
         }
         
         const finalUsername = result.username;
-        console.log('✅ Username updated securely to:', finalUsername);
         
         // Clear caches
         if(typeof clearAllHandleCaches === 'function') {
@@ -5075,12 +4817,10 @@ startRequestsListeners(currentUser.uid);
   const customPingOptions = document.getElementById('customPingOptions');
   const customPingInput = document.getElementById('customPingInput');
   if(customPingOptions) {
-    console.log('✅ customPingOptions element found');
   } else {
     console.error('❌ customPingOptions element NOT FOUND!');
   }
   if(customPingInput) {
-    console.log('✅ customPingInput element found');
   } else {
     console.error('❌ customPingInput element NOT FOUND!');
   }
@@ -5149,7 +4889,6 @@ startRequestsListeners(currentUser.uid);
   if(closePingCrop){ closePingCrop.onclick = ()=> closeModal('pingCropModal'); }
   const TIERS=[{tier:0,label:'Default',price:0},{tier:100,label:'Purple',price:100},{tier:200,label:'Alien',price:200},{tier:300,label:'Galactic',price:300},{tier:500,label:'Nuke',price:500},{tier:1000,label:'Custom Image (sub only)',price:1000}];
   async function renderCustomPingUI(){
-    console.log('🎨 renderCustomPingUI called');
     try{
       const customPingOptionsEl = document.getElementById('customPingOptions');
       if(!customPingOptionsEl) {
@@ -5161,10 +4900,8 @@ startRequestsListeners(currentUser.uid);
         customPingOptionsEl.innerHTML = '<div class="muted">Sign in to customize your ping markers.</div>';
         return;
       }
-      console.log('✅ Rendering custom ping UI for user:', currentUser.uid);
       const snap=await usersRef.doc(currentUser.uid).get(); const u=snap.exists? snap.data():{};
       const owned=u.ownedPings||{}; const sel=Number(u.selectedPingTier||0);
-      console.log('📦 User ping data:', { owned, selected: sel });
       customPingOptionsEl.innerHTML=''; customPingOptionsEl.classList.add('ping-grid');
       TIERS.forEach(t=>{
         const row=document.createElement('div'); row.className='ping-card';
@@ -5193,14 +4930,12 @@ startRequestsListeners(currentUser.uid);
               const ref=usersRef.doc(currentUser.uid); const s=await tx.get(ref);
               const data = s.exists ? s.data() : {};
               const prev = Number(data.points || 0);
-              console.log(`[Unlock Debug] User has ${prev} PPs, skin costs ${price} PPs`);
               if(prev < price) {
                 console.error(`[Unlock Debug] Insufficient: ${prev} < ${price}`);
                 throw new Error(`insufficient: have ${prev}, need ${price}`);
               }
               const ownedNext=Object.assign({}, data.ownedPings || {}, { [t.tier]: true });
               const update = { ownedPings: ownedNext, selectedPingTier:t.tier, points: prev - price };
-              console.log(`[Unlock Debug] Deducting ${price} PPs, new balance: ${prev - price}`);
               tx.set(ref, update,{merge:true});
               // Ledger writes removed - blocked by security rules (ledger is Cloud Function only)
             });
@@ -5422,10 +5157,8 @@ startRequestsListeners(currentUser.uid);
         }
         
         const file = new File([blob], 'avatar.jpg', { type:'image/jpeg' });
-        console.log('Uploading file:', file.size, 'bytes');
         
         const url = await uploadPingImage(file, currentUser.uid);
-        console.log('Uploaded to:', url);
         
         if(!url){
           showToast('Failed to process image');
@@ -5433,7 +5166,6 @@ startRequestsListeners(currentUser.uid);
         }
         
         await usersRef.doc(currentUser.uid).set({ photoURL: url }, { merge:true });
-        console.log('Updated user doc');
         
         // Update UI - refresh all avatar elements immediately
         const topRightAvatar = document.getElementById('profileAvatar'); // Top-right widget
@@ -5458,10 +5190,7 @@ startRequestsListeners(currentUser.uid);
             element.classList.add('custom-avatar');
             element.style.setProperty('--custom-avatar-url', `url("${url}")`);
             
-            console.log(`Updated ${name} with:`, url.substring(0, 50) + '...');
-            console.log(`Element computed style:`, window.getComputedStyle(element).backgroundImage);
           } else {
-            console.log(`${name} not found!`);
           }
         };
         
@@ -5491,7 +5220,6 @@ startRequestsListeners(currentUser.uid);
           allAvatars.forEach(({ el, name }) => {
             if(el) {
               el.setAttribute('style', `background-image: url("${url}"); background-size: cover; background-position: center; background-repeat: no-repeat;`);
-              console.log(`Force updated ${name}`);
             }
           });
         }, 200);
@@ -5507,11 +5235,9 @@ startRequestsListeners(currentUser.uid);
   let friendsListUnsub = null; // 🔥 REAL-TIME: Listener for friend list changes
   
   async function refreshFriends(){
-    console.log('👥 refreshFriends called, currentUser:', currentUser?.uid);
     const friendList = document.getElementById('profileFriendsList');
     const myCodeEl = document.getElementById('myCodeEl');
     if(!friendList){ 
-      console.log('❌ profileFriendsList element not found');
       return; 
     }
     // Clean up any legacy inline Gift PPs UI accidentally added inside the Friends section
@@ -5522,18 +5248,15 @@ startRequestsListeners(currentUser.uid);
     if(!currentUser){ 
       friendList.innerHTML='<div class="muted">Sign in to manage friends.</div>'; 
       myFriends = new Set();
-      console.log('⚠️ No currentUser, clearing friends');
       return; 
     }
     const doc=await usersRef.doc(currentUser.uid).get(); 
     const data=doc.exists? doc.data():{friendIds:[]};
-    console.log('📦 Friend data from Firestore:', data.friendIds);
     // Dedup and normalize friend list
     const originalIds = (data.friendIds||[]).filter(Boolean);
     const uniqueIds = Array.from(new Set(originalIds));
     if(uniqueIds.length !== originalIds.length){ try{ await usersRef.doc(currentUser.uid).set({ friendIds: uniqueIds }, { merge:true }); }catch(_){ } }
     myFriends=new Set(uniqueIds); 
-    console.log('✅ myFriends updated:', myFriends.size, 'friends');
     if(myCodeEl) myCodeEl.value=currentUser.uid;
     const token = ++friendsRenderToken;
     friendList.innerHTML='';
@@ -5628,7 +5351,6 @@ startRequestsListeners(currentUser.uid);
       const currentFriendIds = myFriends;
       if(newFriendIds.size !== currentFriendIds.size || 
          ![...newFriendIds].every(id => currentFriendIds.has(id))) {
-        console.log('🔥 Friend list changed - auto-refreshing');
         refreshFriends();
       }
     });
@@ -5644,11 +5366,9 @@ startRequestsListeners(currentUser.uid);
   // 🔔 FIXED: Direct click handler on bell button (more reliable than delegation)
   const bellBtn = document.getElementById('bellBtn');
   if(bellBtn){
-    console.log('✅ Bell button found');
     bellBtn.addEventListener('click', async (e) => {
       e.preventDefault();
       e.stopPropagation();
-      console.log('🔔 Bell button clicked!');
     if(!currentUser) return showToast('Sign in to view notifications');
     openModal('notifsModal');
     await usersRef.doc(currentUser.uid).set({ unreadCount: 0 }, { merge:true });
@@ -5671,10 +5391,8 @@ startRequestsListeners(currentUser.uid);
       if(count > 0) {
         notifBadge.textContent = count;
         notifBadge.style.display = 'inline';
-        console.log('🔔 Unread notifications:', count);
       } else {
         notifBadge.style.display = 'none';
-        console.log('🔔 No unread notifications');
       }
     }, err => {
       console.error('Error listening to unread count:', err);
@@ -6302,7 +6020,6 @@ startRequestsListeners(currentUser.uid);
     
     if(savedWeek && savedWeek !== currentWeekKey && currentPotw){
       // New week detected - save last week's winner before reset
-      console.log('🏆 New week detected - saving last week\'s champion:', currentPotw.text);
       lastWeekChampion = {...currentPotw};
       
       // Save to Hall of Fame in Firestore (only if not already saved)
@@ -6327,9 +6044,7 @@ startRequestsListeners(currentUser.uid);
               savedAt: firebase.firestore.FieldValue.serverTimestamp()
             }
           });
-          console.log('✅ Saved to Hall of Fame for week:', savedWeek);
         } else {
-          console.log('ℹ️ Hall of Fame entry already exists for week:', savedWeek);
         }
       }catch(e){
         console.error('Failed to save Hall of Fame:', e);
@@ -6510,13 +6225,11 @@ startRequestsListeners(currentUser.uid);
           
           // Skip current week (it's not complete yet)
           if(weekStart >= currentWeekStart){
-            console.log('Skipping current week from Hall of Fame:', weekStart);
             return;
           }
           
           // Skip duplicates
           if(seenWeeks.has(weekStart)){
-            console.log('Skipping duplicate week:', weekStart);
             return;
           }
           seenWeeks.add(weekStart);
@@ -6595,7 +6308,6 @@ startRequestsListeners(currentUser.uid);
     try{ 
       // 🔒 CRITICAL: Ensure handle exists BEFORE refreshing UI
       if(u && !u.isAnonymous) {
-        console.log('🔧 Auth state changed - ensuring identity mappings first');
         await ensureIdentityMappings(u);
       }
       await refreshAuthUI(u); 
@@ -6615,7 +6327,6 @@ startRequestsListeners(currentUser.uid);
   // Initial paint if already signed in from a previous session
   try{ 
     if(auth.currentUser && !auth.currentUser.isAnonymous) {
-      console.log('🔧 Initial paint - ensuring identity mappings first');
       await ensureIdentityMappings(auth.currentUser);
     }
     if(auth.currentUser) {
